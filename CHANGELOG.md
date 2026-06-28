@@ -6,6 +6,25 @@
 
 ---
 
+## [0.3.0] — 2026-06-25
+
+### 变更
+- **协议升级**: 所有扩展和示例统一采用 JSON-RPC 2.0 协议（`method`/`params`/`result`/`error`）
+- **术语统一**: `msgName` → `method`，`payload` → `params`（Go SDK 及所有扩展示例）
+- **C API 参数名更新**: `api/d1.h` 所有函数签名中 `msg_name` → `method`、`payload` → `params`（与 D1 v1.5.0 对齐）
+- **FFI 绑定同步**: C/C++/Python/C#/Java 绑定全部更新为 `method`/`params` 参数名
+- **新增**: `extensions/protocol/` 目录，包含 MQTT 和 HTTP 协议驱动示例
+- **exec 扩展**: Shell 脚本输出格式改为 JSON-RPC 2.0（`{"result": ...}` / `{"error": {...}}`）
+- **script 扩展**: JS 脚本输入改为 `{method, params}`，`d1.call()` 移除 `kind` 参数
+- **service 扩展**: Python 规则引擎改为 JSON-RPC 2.0 请求/响应格式
+- **Go SDK**: `HandlerFunc`、`Publish`、`Call`、`Request`、`Reply` 签名中 `payload` → `params`
+- **示例更新**: C/C++/Python/C#/Java 示例中的处理器参数名更新
+
+### 依赖
+- 对应 D1 动态库版本: **≥ v1.5.0**
+
+---
+
 ## [0.2.0] — 2026-06-10
 
 ### 变更
@@ -59,5 +78,6 @@
 
 ---
 
+[0.3.0]: https://github.com/genius77/d1-sdk/releases/tag/v0.3.0
 [0.2.0]: https://github.com/genius77/d1-sdk/releases/tag/v0.2.0
 [0.1.0]: https://github.com/genius77/d1-sdk/releases/tag/v0.1.0

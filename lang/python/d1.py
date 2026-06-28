@@ -1,212 +1,7 @@
-# D1 示例 — Go 语言
-
-本目录包含 D1 动态库的 Go 语言示例程序。
-
----
-
-## 环境要求
-
-| 依赖 | 最低版本 |
-|------|----------|
-| Go | >= 1.21 |
-| CGO | 已启用（`CGO_ENABLED=1`） |
-| GCC / Clang | 编译 C 代码所需 |
-
-**操作系统支持:**
-
-| 系统 | 动态库文件 |
-|------|-----------|
-| Linux (x86_64 / aarch64) | `libd1.so` |
-| macOS (x86_64 / arm64) | `libd1.dylib` |
-| Windows (x86_64) | `d1.dll` |
-
----
-
-## 快速开始
-
-### 1. 克隆仓库
-
-```bash
-git clone https://github.com/genius77/d1-sdk.git
-cd d1-sdk
-```
-
-### 2. 下载 D1 动态库
-
-将 `d1.h` 与对应的动态库文件放入仓库根目录下的 `deps/` 文件夹中。
-
-目录结构应为:
-
-```
-d1-sdk/
-├── deps/
-│   ├── d1.h
-│   ├── libd1.so        # Linux
-│   ├── libd1.dylib     # macOS
-│   └── d1.dll          # Windows
-├── lang/
-│   ├── go/
-│   │   ├── d1.go
-│   │   └── go.mod
-│   └── python/
-│       └── d1.py
-└── examples/
-    ├── go/
-    │   ├── 01_hello_d1/
-    │   ├── 02_pub_sub/
-    │   └── README.md
-    └── python/
-        ├── 01_hello_d1/
-        └── README.md
-```
-
-> **提示:** 可以使用 `make setup-deps` 快速创建 `deps/` 目录。
-
-### 3. 编译示例
-
-进入 `01_hello_d1` 示例目录:
-
-```bash
-cd examples/go/01_hello_d1
-make build
-```
-
-如果动态库不在默认位置，可手动设置 CGO 环境变量:
-
-```bash
-CGO_CFLAGS="-I/path/to/deps"  \
-CGO_LDFLAGS="-L/path/to/deps -ld1" \
-CGO_ENABLED=1 go build -o hello_d1 .
-```
-
-### 4. 运行
-
-```bash
-./hello_d1
-```
-
-输出示例:
-
-```
-2024/01/01 12:00:00 ===== D1 Hello World (Go) =====
-2024/01/01 12:00:00 D1 动态库版本: v1.1.0
-2024/01/01 12:00:00 正在初始化 D1 (配置文件: "")...
-2024/01/01 12:00:00 D1 初始化成功
-2024/01/01 12:00:00 默认消息处理器已设置
-2024/01/01 12:00:00 正在启动 D1...
-2024/01/01 12:00:00 D1 启动成功，正在运行... (按 Ctrl+C 退出)
-^C
-2024/01/01 12:00:05 收到信号: interrupt，正在停止 D1...
-2024/01/01 12:00:05 D1 已正常退出，示例结束
-```
-
----
-
-## 示例列表
-
-| 目录 | 说明 |
-|------|------|
-| `01_hello_d1/` | 最简示例：初始化 -> 设置处理器 -> 启动 -> 等待退出 |
-
----
-
-## SDK 使用说明
-
-详细 API 文档请参阅 SDK 源文件: [`../../lang/go/d1.go`](../../lang/go/d1.go)
-
-### 基本用法
-
-```go
-import d1 "github.com/genius77/d1-sdk/lang/go"
-
-func main() {
-    // 获取全局单例
-    d := d1.Default()
-
-    // 输出 D1 版本
-    fmt.Println("版本:", d.Version())
-
-    // 初始化（可传入配置文件路径，空字符串使用默认配置）
-    if err := d.Init(""); err != nil {
-        log.Fatal(err)
-    }
-
-    // 设置默认消息处理器
-    d.SetDefaultHandler(func(taskID uint64, msgName string, payload []byte) ([]byte, error) {
-        log.Printf("收到消息: %s -> %s", msgName, string(payload))
-        return []byte("ok"), nil
-    })
-
-    // 启动 D1
-    if err := d.Start(); err != nil {
-        log.Fatal(err)
-    }
-
-    // 发送消息
-    d.Publish(1, "target/node", "event.test", `{"hello":"world"}`)
-
-    // 同步调用
-    resp, err := d.Call(2, 0, "target/node", "rpc.query", `{"sql":"SELECT 1"}`, 10)
-
-    // 缓存操作
-    d.CacheSet(3, "mykey", "myvalue", 3600)
-    val, _ := d.CacheGet(3, "mykey")
-    d.CacheDelete(3, "mykey")
-
-    // 数据库操作
-    json, _ := d.DBQuery(4, "SELECT * FROM items LIMIT 5")
-    rows, _ := d.DBExec(5, "UPDATE items SET status=1 WHERE id=42")
-
-    // 键值存储
-    d.Set(6, "config.name", "myapp")
-    cfg, _ := d.Get(6, "config.name")
-
-    // 阻塞等待退出
-    d.WaitStop()
-}
-```
-
----
-
-## 常见问题
-
-### Q: 编译时报 `d1.h: No such file or directory`
-**A:** 请确保 `deps/d1.h` 文件存在。可通过 `make setup-deps` 创建目录后手动放入。
-
-### Q: 运行时 `error while loading shared libraries: libd1.so`
-**A:** Linux 下需确保动态库在链接器搜索路径中:
-```bash
-export LD_LIBRARY_PATH="$(pwd)/deps:$LD_LIBRARY_PATH"
-./hello_d1
-```
-
-### Q: macOS 下 `dyld: Library not loaded`
-**A:** macOS 下需设置 `DYLD_LIBRARY_PATH`:
-```bash
-export DYLD_LIBRARY_PATH="$(pwd)/deps:$DYLD_LIBRARY_PATH"
-./hello_d1
-```
-
-### Q: CGO 未启用
-**A:** 设置环境变量:
-```bash
-export CGO_ENABLED=1
-```
-
----
-
-## 许可证
-
-D1 示例代码按仓库根目录 LICENSE 文件发布。D1 动态库本身的许可请联系 genius77。</think>
-
-
-
-<｜DSML｜tool_calls>
-<｜DSML｜invoke name="Write">
-<｜DSML｜parameter name="content" string="true">#!/usr/bin/env python3
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-D1 SDK Python 封装 | 对应 D1 动态库版本: >= v1.2.0
+D1 SDK Python 封装 | 对应 D1 动态库版本: >= v1.5.0
 
 本模块通过 ctypes 封装 D1 动态库的全部 17 个 C API，
 提供 Pythonic 的调用方式。
@@ -289,27 +84,27 @@ except OSError as e:
 # ---------------------------------------------------------------------------
 
 # D1 默认消息处理器回调类型
-# int (*)(uint64_t task_id, const char* msg_name,
-#          const char* payload, int payload_len,
-#          char** out_payload, int* out_len, char** out_error)
+# int (*)(uint64_t task_id, const char* method,
+#          const char* params, int params_len,
+#          char** out_result, int* out_len, char** out_error)
 D1_HANDLER_CB = CFUNCTYPE(
     c_int,                        # 返回值
     c_uint64,                      # task_id
-    c_char_p,                      # msg_name
-    c_char_p,                      # payload
-    c_int,                         # payload_len
-    POINTER(c_char_p),             # out_payload
+    c_char_p,                      # method
+    c_char_p,                      # params
+    c_int,                         # params_len
+    POINTER(c_char_p),             # out_result
     POINTER(c_int),                # out_len
     POINTER(c_char_p),             # out_error
 )
 
 # D1 异步请求回调类型
-# void (*)(uint64_t task_id, const char* payload, int payload_len, const char* error)
+# void (*)(uint64_t task_id, const char* params, int params_len, const char* error)
 D1_REQUEST_CB = CFUNCTYPE(
     None,                          # 返回值 void
     c_uint64,                      # task_id
-    c_char_p,                      # payload
-    c_int,                         # payload_len
+    c_char_p,                      # params
+    c_int,                         # params_len
     c_char_p,                      # error
 )
 
@@ -332,27 +127,27 @@ _lib.D1_Start.restype = c_int
 _lib.D1_Stop.argtypes = []
 _lib.D1_Stop.restype = c_int
 
-# 5. D1_WaitStop(void) -> void
+# 5. D1_WaitStop(void) -> int
 _lib.D1_WaitStop.argtypes = []
-_lib.D1_WaitStop.restype = None
+_lib.D1_WaitStop.restype = c_int
 
-# 6. D1_SetDefaultHandler(handler) -> void
-_lib.D1_SetDefaultHandler.argtypes = [D1_HANDLER_CB]
-_lib.D1_SetDefaultHandler.restype = None
+# 6. D1_SetOnRequest(handler) -> void
+_lib.D1_SetOnRequest.argtypes = [D1_HANDLER_CB]
+_lib.D1_SetOnRequest.restype = None
 
-# 7. D1_Publish(task_id, target, msg_name, payload, payload_len) -> int
+# 7. D1_Publish(task_id, target, method, params, payload_len) -> int
 _lib.D1_Publish.argtypes = [c_uint64, c_char_p, c_char_p, c_char_p, c_int]
 _lib.D1_Publish.restype = c_int
 
-# 8. D1_Call(task_id, kind, target, msg_name, payload, payload_len,
-#            timeout_sec, out_payload, out_len, out_error) -> int
+# 8. D1_Call(task_id, kind, target, method, params, payload_len,
+#            timeout_sec, out_result, out_len, out_error) -> int
 _lib.D1_Call.argtypes = [
     c_uint64, c_int, c_char_p, c_char_p, c_char_p,
     c_int, c_int, POINTER(c_char_p), POINTER(c_int), POINTER(c_char_p),
 ]
 _lib.D1_Call.restype = c_int
 
-# 9. D1_Request(task_id, target, msg_name, payload, payload_len,
+# 9. D1_Request(task_id, target, method, params, payload_len,
 #               timeout_sec, callback) -> int
 _lib.D1_Request.argtypes = [
     c_uint64, c_char_p, c_char_p, c_char_p,
@@ -360,7 +155,7 @@ _lib.D1_Request.argtypes = [
 ]
 _lib.D1_Request.restype = c_int
 
-# 10. D1_Reply(task_id, msg_name, payload, payload_len) -> int
+# 10. D1_Reply(task_id, method, params, payload_len) -> int
 _lib.D1_Reply.argtypes = [c_uint64, c_char_p, c_char_p, c_int]
 _lib.D1_Reply.restype = c_int
 
@@ -428,7 +223,7 @@ class D1:
             print("版本:", d1.version())
             d1.init("config.yaml")
             d1.start()
-            d1.set_default_handler(my_handler)
+            d1.set_on_request(my_handler)
             d1.wait_stop()
 
     或手动管理生命周期:
@@ -544,36 +339,36 @@ class D1:
         推荐用法: init() → start() → wait_stop() → 进程退出
         D1_WaitStop 内部监听 SIGINT/SIGTERM，无需用户手动处理信号。
         """
-        _lib.D1_WaitStop()
+        return _lib.D1_WaitStop()
 
-    # === 6. SetDefaultHandler ===
+    # === 6. SetOnRequest ===
 
-    def set_default_handler(self, handler):
+    def set_on_request(self, handler):
         """设置默认消息处理器。
 
         Args:
-            handler: 可调用对象，签名为 handler(task_id, msg_name, payload) -> bytes 或 None。
+            handler: 可调用对象，签名为 handler(task_id, method, params) -> bytes 或 None。
                      返回 bytes 作为响应载荷，或返回 None 表示无响应。
                      如需返回错误，抛异常即可。
 
         示例:
-            def my_handler(task_id, msg_name, payload):
-                print(f"[{task_id}] {msg_name}: {payload}")
+            def my_handler(task_id, method, params):
+                print(f"[{task_id}] {method}: {params}")
                 return b"ack"
 
-            d1.set_default_handler(my_handler)
+            d1.set_on_request(my_handler)
         """
         # 创建 C 回调闭包
-        def _cb(task_id, msg_name, payload, payload_len, out_payload, out_len, out_error):
+        def _cb(task_id, method, params, payload_len, out_result, out_len, out_error):
             try:
-                py_payload = string_at(payload, payload_len) if payload and payload_len > 0 else b""
-                py_msg_name = msg_name.decode("utf-8") if msg_name else ""
+                py_params = string_at(params, payload_len) if params and payload_len > 0 else b""
+                py_method = method.decode("utf-8") if method else ""
 
-                result = handler(task_id, py_msg_name, py_payload)
+                result = handler(task_id, py_method, py_params)
 
                 if result is not None:
                     result_bytes = result if isinstance(result, bytes) else str(result).encode("utf-8")
-                    out_payload[0] = ctypes.cast(
+                    out_result[0] = ctypes.cast(
                         ctypes.create_string_buffer(result_bytes, len(result_bytes)),
                         c_char_p,
                     )
@@ -589,43 +384,43 @@ class D1:
                 return -1
 
         self._handler_ref = D1_HANDLER_CB(_cb)
-        _lib.D1_SetDefaultHandler(self._handler_ref)
+        _lib.D1_SetOnRequest(self._handler_ref)
 
     # === 7. Publish ===
 
-    def publish(self, task_id, target, msg_name, payload):
+    def publish(self, task_id, target, method, params):
         """发布消息到指定目标（单向，不等待响应）。
 
         Args:
             task_id (int): 任务标识。
             target (str): 目标地址。
-            msg_name (str): 消息名称。
-            payload (str | bytes): 消息载荷。
+            method (str): 消息方法。
+            params (str | bytes): 消息参数。
 
         Raises:
             D1Error: 发布失败。
         """
         c_target = target.encode("utf-8")
-        c_msg = msg_name.encode("utf-8")
-        c_payload, p_len = self._encode_payload(payload)
+        c_method = method.encode("utf-8")
+        c_params, p_len = self._encode_payload(params)
 
         ret = _lib.D1_Publish(
-            c_uint64(task_id), c_target, c_msg, c_payload, p_len
+            c_uint64(task_id), c_target, c_method, c_params, p_len
         )
         if ret != 0:
             raise D1Error(f"D1_Publish failed, error code: {ret}", code=ret)
 
     # === 8. Call ===
 
-    def call(self, task_id, kind, target, msg_name, payload, timeout_sec):
+    def call(self, task_id, kind, target, method, params, timeout_sec):
         """同步调用远程目标并等待响应。
 
         Args:
             task_id (int): 任务标识。
             kind (int): 调用类型。
             target (str): 目标地址。
-            msg_name (str): 消息名称。
-            payload (str | bytes): 消息载荷。
+            method (str): 消息方法。
+            params (str | bytes): 消息参数。
             timeout_sec (int): 超时秒数。
 
         Returns:
@@ -636,32 +431,32 @@ class D1:
             D1Error: 调用失败。
         """
         c_target = target.encode("utf-8")
-        c_msg = msg_name.encode("utf-8")
-        c_payload, p_len = self._encode_payload(payload)
+        c_method = method.encode("utf-8")
+        c_params, p_len = self._encode_payload(params)
 
-        out_payload = c_char_p()
+        out_result = c_char_p()
         out_len = c_int()
         out_error = c_char_p()
 
         ret = _lib.D1_Call(
             c_uint64(task_id), c_int(kind),
-            c_target, c_msg, c_payload, p_len, c_int(timeout_sec),
-            byref(out_payload), byref(out_len), byref(out_error),
+            c_target, c_method, c_params, p_len, c_int(timeout_sec),
+            byref(out_result), byref(out_len), byref(out_error),
         )
 
         # 提取结果（在释放前复制）
         result_payload = None
         result_error = None
 
-        if out_payload.value is not None:
-            result_payload = string_at(out_payload.value, out_len.value)
+        if out_result.value is not None:
+            result_payload = string_at(out_result.value, out_len.value)
 
         if out_error.value is not None:
             result_error = string_at(out_error.value).decode("utf-8")
 
         # 释放 D1 分配的内存
-        if out_payload.value is not None:
-            _lib.D1_Free(out_payload.value)
+        if out_result.value is not None:
+            _lib.D1_Free(out_result.value)
         if out_error.value is not None:
             _lib.D1_Free(out_error.value)
 
@@ -673,14 +468,14 @@ class D1:
 
     # === 9. Request ===
 
-    def request(self, task_id, target, msg_name, payload, timeout_sec, callback):
+    def request(self, task_id, target, method, params, timeout_sec, callback):
         """异步请求远程目标。
 
         Args:
             task_id (int): 任务标识。
             target (str): 目标地址。
-            msg_name (str): 消息名称。
-            payload (str | bytes): 消息载荷。
+            method (str): 消息方法。
+            params (str | bytes): 消息参数。
             timeout_sec (int): 超时秒数。
             callback: 回调函数，签名 callback(task_id, payload, error)。
 
@@ -703,11 +498,11 @@ class D1:
         self._request_cbs[task_id] = (callback, cb_ref)
 
         c_target = target.encode("utf-8")
-        c_msg = msg_name.encode("utf-8")
-        c_payload, p_len = self._encode_payload(payload)
+        c_method = method.encode("utf-8")
+        c_params, p_len = self._encode_payload(params)
 
         ret = _lib.D1_Request(
-            c_uint64(task_id), c_target, c_msg, c_payload, p_len,
+            c_uint64(task_id), c_target, c_method, c_params, p_len,
             c_int(timeout_sec), cb_ref,
         )
 
@@ -717,21 +512,21 @@ class D1:
 
     # === 10. Reply ===
 
-    def reply(self, task_id, msg_name, payload):
+    def reply(self, task_id, method, params):
         """回复消息（通常在 handler 内部使用）。
 
         Args:
             task_id (int): 原始任务标识。
-            msg_name (str): 回复消息名称。
-            payload (str | bytes): 回复载荷。
+            method (str): 回复消息方法。
+            params (str | bytes): 回复参数。
 
         Raises:
             D1Error: 回复失败。
         """
-        c_msg = msg_name.encode("utf-8")
-        c_payload, p_len = self._encode_payload(payload)
+        c_method = method.encode("utf-8")
+        c_params, p_len = self._encode_payload(params)
 
-        ret = _lib.D1_Reply(c_uint64(task_id), c_msg, c_payload, p_len)
+        ret = _lib.D1_Reply(c_uint64(task_id), c_method, c_params, p_len)
         if ret != 0:
             raise D1Error(f"D1_Reply failed, error code: {ret}", code=ret)
 

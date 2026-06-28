@@ -1,4 +1,4 @@
-// D1 SDK C# 封装 | 对应 D1 动态库版本: ≥ v1.2.0
+// D1 SDK C# 封装 | 对应 D1 动态库版本: ≥ v1.5.0
 // 跨平台支持: Windows (.dll) | Linux (.so) | macOS (.dylib)
 //
 // 用法: 将本文件加入项目，将动态库放入项目 deps/ 目录即可。
@@ -74,19 +74,19 @@ namespace Genius77.D1
 
     /// <summary>
     /// 默认请求处理回调委托。当 D1 收到未匹配的请求时调用此处理器。
-    /// 由 D1.SetDefaultHandler() 注册。
+    /// 由 D1.SetOnRequest() 注册。
     /// </summary>
     /// <param name="taskId">任务 ID。</param>
-    /// <param name="msgName">消息名称。</param>
+    /// <param name="method">消息名称。</param>
     /// <param name="payload">请求负载（UTF-8 编码字符串）。</param>
-    /// <param name="outPayload">通过 out 返回的响应负载，可为 null。</param>
+    /// <param name="outResult">通过 out 返回的响应负载，可为 null。</param>
     /// <param name="outError">通过 out 返回的错误信息，可为 null。</param>
     /// <returns>返回 0 表示处理成功，非零表示处理失败。</returns>
     public delegate int D1RequestHandler(
         ulong taskId,
-        string msgName,
+        string method,
         string payload,
-        out string outPayload,
+        out string outResult,
         out string outError);
 
     /// <summary>
@@ -107,10 +107,10 @@ namespace Genius77.D1
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     internal delegate int NativeOnRequestFunc(
         ulong taskId,
-        IntPtr msgName,
+        IntPtr method,
         IntPtr payload,
         int payloadLen,
-        out IntPtr outPayload,
+        out IntPtr outResult,
         out int outLen,
         out IntPtr outError);
 
@@ -181,16 +181,16 @@ namespace Genius77.D1
         private static extern int D1_Stop();
 
         [DllImport("D1", CallingConvention = CallingConvention.Cdecl)]
-        private static extern void D1_WaitStop();
+        private static extern int D1_WaitStop();
 
         [DllImport("D1", CallingConvention = CallingConvention.Cdecl)]
-        private static extern void D1_SetDefaultHandler(NativeOnRequestFunc handler);
+        private static extern void D1_SetOnRequest(NativeOnRequestFunc handler);
 
         [DllImport("D1", CallingConvention = CallingConvention.Cdecl)]
         private static extern int D1_Publish(
             ulong taskId,
             IntPtr target,
-            IntPtr msgName,
+            IntPtr method,
             IntPtr payload,
             int payloadLen);
 
@@ -199,11 +199,11 @@ namespace Genius77.D1
             ulong taskId,
             IntPtr kind,
             IntPtr target,
-            IntPtr msgName,
+            IntPtr method,
             IntPtr payload,
             int payloadLen,
             int timeoutSec,
-            out IntPtr outPayload,
+            out IntPtr outResult,
             out int outLen,
             out IntPtr outError);
 
@@ -211,7 +211,7 @@ namespace Genius77.D1
         private static extern int D1_Request(
             ulong taskId,
             IntPtr target,
-            IntPtr msgName,
+            IntPtr method,
             IntPtr payload,
             int payloadLen,
             int timeoutSec,
@@ -220,7 +220,7 @@ namespace Genius77.D1
         [DllImport("D1", CallingConvention = CallingConvention.Cdecl)]
         private static extern int D1_Reply(
             ulong taskId,
-            IntPtr msgName,
+            IntPtr method,
             IntPtr payload,
             int payloadLen);
 
@@ -390,9 +390,9 @@ namespace Genius77.D1
         /// 阻塞等待退出信号（Ctrl+C），收到信号后自动调用 Stop()。
         /// 推荐用法: Init() → Start() → WaitStop() → 进程退出
         /// </summary>
-        public static void WaitStop()
+        public static int WaitStop()
         {
-            D1_WaitStop();
+            return D1_WaitStop();
         }
 
         /// <summary>
@@ -401,7 +401,7 @@ namespace Genius77.D1
         /// </summary>
         /// <param name="handler">请求处理回调。不能为 null。</param>
         /// <exception cref="ArgumentNullException">handler 为 null 时抛出。</exception>
-        public static void SetDefaultHandler(D1RequestHandler handler)
+        public static void SetOnRequest(D1RequestHandler handler)
         {
             if (handler == null)
                 throw new ArgumentNullException(nameof(handler));
@@ -410,11 +410,11 @@ namespace Genius77.D1
 
             // 构建原生回调: 将 C 字符串参数转为 C# string，调用用户处理器，
             // 再将 out 参数序列化回非托管内存（由 D1 负责 D1_Free）
-            _nativeHandler = (taskId, msgNamePtr, payloadPtr, payloadLen,
-                out IntPtr outPayloadPtr, out int outLen, out IntPtr outErrorPtr) =>
+            _nativeHandler = (taskId, methodPtr, payloadPtr, payloadLen,
+                out IntPtr outResultPtr, out int outLen, out IntPtr outErrorPtr) =>
             {
                 // 入参转换: 原生指针 -> C# 字符串
-                string msgName = Marshal.PtrToStringUTF8(msgNamePtr) ?? string.Empty;
+                string method = Marshal.PtrToStringUTF8(methodPtr) ?? string.Empty;
 
                 string payload;
                 if (payloadLen > 0 && payloadPtr != IntPtr.Zero)
@@ -429,20 +429,20 @@ namespace Genius77.D1
                 }
 
                 // 调用用户处理器
-                int result = handler(taskId, msgName, payload,
-                    out string outPayload, out string outError);
+                int result = handler(taskId, method, payload,
+                    out string outResult, out string outError);
 
                 // 出参转换: C# 字符串 -> 非托管内存
-                if (outPayload != null)
+                if (outResult != null)
                 {
-                    byte[] bytes = Encoding.UTF8.GetBytes(outPayload);
-                    outPayloadPtr = Marshal.AllocHGlobal(bytes.Length);
-                    Marshal.Copy(bytes, 0, outPayloadPtr, bytes.Length);
+                    byte[] bytes = Encoding.UTF8.GetBytes(outResult);
+                    outResultPtr = Marshal.AllocHGlobal(bytes.Length);
+                    Marshal.Copy(bytes, 0, outResultPtr, bytes.Length);
                     outLen = bytes.Length;
                 }
                 else
                 {
-                    outPayloadPtr = IntPtr.Zero;
+                    outResultPtr = IntPtr.Zero;
                     outLen = 0;
                 }
 
@@ -460,7 +460,7 @@ namespace Genius77.D1
                 return result;
             };
 
-            D1_SetDefaultHandler(_nativeHandler);
+            D1_SetOnRequest(_nativeHandler);
         }
 
         /// <summary>
@@ -468,24 +468,24 @@ namespace Genius77.D1
         /// </summary>
         /// <param name="taskId">任务 ID，用于关联上下文。</param>
         /// <param name="target">目标标识字符串。</param>
-        /// <param name="msgName">消息名称。</param>
+        /// <param name="method">消息名称。</param>
         /// <param name="payload">消息负载（UTF-8 字符串），可为 null。</param>
         /// <exception cref="D1Exception">发布失败时抛出。</exception>
-        public static void Publish(ulong taskId, string target, string msgName, string? payload)
+        public static void Publish(ulong taskId, string target, string method, string? payload)
         {
             IntPtr targetPtr = StringToUtf8Ptr(target);
-            IntPtr msgNamePtr = StringToUtf8Ptr(msgName);
+            IntPtr methodPtr = StringToUtf8Ptr(method);
             IntPtr payloadPtr = StringToUtf8Ptr(payload);
             try
             {
-                int ret = D1_Publish(taskId, targetPtr, msgNamePtr, payloadPtr,
+                int ret = D1_Publish(taskId, targetPtr, methodPtr, payloadPtr,
                     payload != null ? Encoding.UTF8.GetByteCount(payload) : 0);
                 ThrowIfError(ret, "Publish");
             }
             finally
             {
                 if (targetPtr != IntPtr.Zero) Marshal.FreeHGlobal(targetPtr);
-                if (msgNamePtr != IntPtr.Zero) Marshal.FreeHGlobal(msgNamePtr);
+                if (methodPtr != IntPtr.Zero) Marshal.FreeHGlobal(methodPtr);
                 if (payloadPtr != IntPtr.Zero) Marshal.FreeHGlobal(payloadPtr);
             }
         }
@@ -496,7 +496,7 @@ namespace Genius77.D1
         /// <param name="taskId">任务 ID。</param>
         /// <param name="kind">处理器类型："default"/"conn"/"script"/"service"/"exec"。</param>
         /// <param name="target">目标标识。</param>
-        /// <param name="msgName">消息名称。</param>
+        /// <param name="method">消息名称。</param>
         /// <param name="payload">请求负载，可为 null。</param>
         /// <param name="timeoutSec">超时时间（秒），0 表示永不超时。</param>
         /// <returns>包含返回码、负载和错误信息的 D1CallResult。</returns>
@@ -504,31 +504,31 @@ namespace Genius77.D1
             ulong taskId,
             string kind,
             string target,
-            string msgName,
+            string method,
             string? payload,
             int timeoutSec)
         {
             IntPtr kindPtr = StringToUtf8Ptr(kind);
             IntPtr targetPtr = StringToUtf8Ptr(target);
-            IntPtr msgNamePtr = StringToUtf8Ptr(msgName);
+            IntPtr methodPtr = StringToUtf8Ptr(method);
             IntPtr payloadPtr = StringToUtf8Ptr(payload);
             try
             {
-                int ret = D1_Call(taskId, kindPtr, targetPtr, msgNamePtr, payloadPtr,
+                int ret = D1_Call(taskId, kindPtr, targetPtr, methodPtr, payloadPtr,
                     payload != null ? Encoding.UTF8.GetByteCount(payload) : 0,
                     timeoutSec,
-                    out IntPtr outPayloadPtr, out int outLen, out IntPtr outErrorPtr);
+                    out IntPtr outResultPtr, out int outLen, out IntPtr outErrorPtr);
 
-                string? outPayload = PtrToStringAndFree(outPayloadPtr, outLen);
+                string? outResult = PtrToStringAndFree(outResultPtr, outLen);
                 string? outError = PtrToStringAndFree(outErrorPtr, 0);
 
-                return new D1CallResult(ret, outPayload, outError);
+                return new D1CallResult(ret, outResult, outError);
             }
             finally
             {
                 if (kindPtr != IntPtr.Zero) Marshal.FreeHGlobal(kindPtr);
                 if (targetPtr != IntPtr.Zero) Marshal.FreeHGlobal(targetPtr);
-                if (msgNamePtr != IntPtr.Zero) Marshal.FreeHGlobal(msgNamePtr);
+                if (methodPtr != IntPtr.Zero) Marshal.FreeHGlobal(methodPtr);
                 if (payloadPtr != IntPtr.Zero) Marshal.FreeHGlobal(payloadPtr);
             }
         }
@@ -538,7 +538,7 @@ namespace Genius77.D1
         /// </summary>
         /// <param name="taskId">任务 ID。</param>
         /// <param name="target">目标标识。</param>
-        /// <param name="msgName">消息名称。</param>
+        /// <param name="method">消息名称。</param>
         /// <param name="payload">请求负载，可为 null。</param>
         /// <param name="timeoutSec">超时时间（秒）。</param>
         /// <param name="callback">响应回调函数，不能为 null。</param>
@@ -547,7 +547,7 @@ namespace Genius77.D1
         public static void Request(
             ulong taskId,
             string target,
-            string msgName,
+            string method,
             string? payload,
             int timeoutSec,
             D1ResponseCallback callback)
@@ -556,7 +556,7 @@ namespace Genius77.D1
                 throw new ArgumentNullException(nameof(callback));
 
             IntPtr targetPtr = StringToUtf8Ptr(target);
-            IntPtr msgNamePtr = StringToUtf8Ptr(msgName);
+            IntPtr methodPtr = StringToUtf8Ptr(method);
             IntPtr payloadPtr = StringToUtf8Ptr(payload);
 
             // 创建原生回调 — 必须保持引用以防 GC 回收
@@ -579,7 +579,7 @@ namespace Genius77.D1
 
             try
             {
-                int ret = D1_Request(taskId, targetPtr, msgNamePtr, payloadPtr,
+                int ret = D1_Request(taskId, targetPtr, methodPtr, payloadPtr,
                     payload != null ? Encoding.UTF8.GetByteCount(payload) : 0,
                     timeoutSec, nativeCb);
                 ThrowIfError(ret, "Request");
@@ -587,7 +587,7 @@ namespace Genius77.D1
             finally
             {
                 if (targetPtr != IntPtr.Zero) Marshal.FreeHGlobal(targetPtr);
-                if (msgNamePtr != IntPtr.Zero) Marshal.FreeHGlobal(msgNamePtr);
+                if (methodPtr != IntPtr.Zero) Marshal.FreeHGlobal(methodPtr);
                 if (payloadPtr != IntPtr.Zero) Marshal.FreeHGlobal(payloadPtr);
             }
 
@@ -599,22 +599,22 @@ namespace Genius77.D1
         /// 在当前请求处理的上下文中回复消息。通常在处理器的回调内调用。
         /// </summary>
         /// <param name="taskId">任务 ID。</param>
-        /// <param name="msgName">消息名称。</param>
+        /// <param name="method">消息名称。</param>
         /// <param name="payload">回复负载，可为 null。</param>
         /// <exception cref="D1Exception">回复失败时抛出。</exception>
-        public static void Reply(ulong taskId, string msgName, string? payload)
+        public static void Reply(ulong taskId, string method, string? payload)
         {
-            IntPtr msgNamePtr = StringToUtf8Ptr(msgName);
+            IntPtr methodPtr = StringToUtf8Ptr(method);
             IntPtr payloadPtr = StringToUtf8Ptr(payload);
             try
             {
-                int ret = D1_Reply(taskId, msgNamePtr, payloadPtr,
+                int ret = D1_Reply(taskId, methodPtr, payloadPtr,
                     payload != null ? Encoding.UTF8.GetByteCount(payload) : 0);
                 ThrowIfError(ret, "Reply");
             }
             finally
             {
-                if (msgNamePtr != IntPtr.Zero) Marshal.FreeHGlobal(msgNamePtr);
+                if (methodPtr != IntPtr.Zero) Marshal.FreeHGlobal(methodPtr);
                 if (payloadPtr != IntPtr.Zero) Marshal.FreeHGlobal(payloadPtr);
             }
         }

@@ -1,5 +1,5 @@
 /*
- * D1 SDK C++ 封装 | 对应 D1 动态库版本: ≥ v1.2.0
+ * D1 SDK C++ 封装 | 对应 D1 动态库版本: ≥ v1.5.0
  *
  * 本文件对 D1 C API 进行了现代 C++ RAII 封装，提供 PascalCase 风格的方法调用。
  * 所有方法均为静态方法，通过 D1 类直接调用，无需实例化。
@@ -31,28 +31,28 @@ const char* D1_Version(void);
 int         D1_Init(const char* config_path);
 int         D1_Start(void);
 int         D1_Stop(void);
-void        D1_WaitStop(void);
+int         D1_WaitStop(void);
 
-typedef int (*D1_OnRequestFunc)(uint64_t task_id, const char* msg_name,
-                                const char* payload, int payload_len,
-                                char** out_payload, int* out_len,
+typedef int (*D1_OnRequestFunc)(uint64_t task_id, const char* method,
+                                const char* params, int params_len,
+                                char** out_result, int* out_len,
                                 char** out_error);
-void D1_SetDefaultHandler(D1_OnRequestFunc handler);
+void D1_SetOnRequest(D1_OnRequestFunc handler);
 
-typedef void (*D1_OnResponse)(uint64_t task_id, const char* payload,
-                              int payload_len, const char* error);
+typedef void (*D1_OnResponse)(uint64_t task_id, const char* params,
+                              int params_len, const char* error);
 
-int D1_Publish(uint64_t task_id, const char* target, const char* msg_name,
-               const char* payload, int payload_len);
+int D1_Publish(uint64_t task_id, const char* target, const char* method,
+               const char* params, int params_len);
 int D1_Call(uint64_t task_id, const char* kind, const char* target,
-            const char* msg_name, const char* payload, int payload_len,
-            int timeout_sec, char** out_payload, int* out_len,
+            const char* method, const char* params, int params_len,
+            int timeout_sec, char** out_result, int* out_len,
             char** out_error);
-int D1_Request(uint64_t task_id, const char* target, const char* msg_name,
-               const char* payload, int payload_len, int timeout_sec,
+int D1_Request(uint64_t task_id, const char* target, const char* method,
+               const char* params, int params_len, int timeout_sec,
                D1_OnResponse callback);
-int D1_Reply(uint64_t task_id, const char* msg_name, const char* payload,
-             int payload_len);
+int D1_Reply(uint64_t task_id, const char* method, const char* params,
+             int params_len);
 
 int  D1_CacheGet(uint64_t task_id, const char* key, char** result,
                  int* result_len);
@@ -142,20 +142,20 @@ public:
 
     /** WaitStop - 阻塞等待退出信号，收到信号后自动调用 Stop()。
      *  推荐用法: Init() → Start() → WaitStop() → 进程退出 */
-    static void WaitStop() { D1_WaitStop(); }
+    static int WaitStop() { return D1_WaitStop(); }
 
     /**
-     * SetDefaultHandler - 设置默认消息请求处理器。
+     * SetOnRequest - 设置默认消息请求处理器。
      *
      * 参数:
      *   handler: 处理回调函数。使用 std::function 包装，支持 lambda。
      */
-    static void SetDefaultHandler(
+    static void SetOnRequest(
         std::function<int(uint64_t, const char*, const char*, int,
                           char**, int*, char**)> handler)
     {
         if (!handler) {
-            D1_SetDefaultHandler(nullptr);
+            D1_SetOnRequest(nullptr);
             return;
         }
 
@@ -166,13 +166,13 @@ public:
 
         s_handler = std::move(handler);
 
-        D1_SetDefaultHandler([](uint64_t task_id, const char* msg_name,
-                                const char* payload, int payload_len,
-                                char** out_payload, int* out_len,
+        D1_SetOnRequest([](uint64_t task_id, const char* method,
+                                const char* params, int params_len,
+                                char** out_params, int* out_len,
                                 char** out_error) -> int {
             if (s_handler) {
-                return s_handler(task_id, msg_name, payload, payload_len,
-                                 out_payload, out_len, out_error);
+                return s_handler(task_id, method, params, params_len,
+                                 out_params, out_len, out_error);
             }
             return -1;
         });
@@ -294,17 +294,17 @@ public:
      * 参数:
      *   task_id:  任务 ID。
      *   target:   目标标识符。
-     *   msg_name: 消息名称。
-     *   payload:  消息载荷。
+     *   method:   消息名称。
+     *   params:   消息载荷。
      *
      * 返回: 0 表示成功，非 0 表示失败。
      */
     static int Publish(uint64_t task_id, const std::string& target,
-                       const std::string& msg_name,
-                       const std::string& payload)
+                       const std::string& method,
+                       const std::string& params)
     {
-        return D1_Publish(task_id, target.c_str(), msg_name.c_str(),
-                          payload.data(), static_cast<int>(payload.size()));
+        return D1_Publish(task_id, target.c_str(), method.c_str(),
+                          params.data(), static_cast<int>(params.size()));
     }
 
     /**
@@ -314,26 +314,26 @@ public:
      *   task_id:     任务 ID。
      *   kind:        处理器类型："default"/"conn"/"script"/"service"/"exec"，传空字符串使用默认类型。
      *   target:      目标标识符。
-     *   msg_name:    消息名称。
-     *   payload:     请求载荷。
+     *   method:      消息名称。
+     *   params:      请求载荷。
      *   timeout_sec: 超时时间（秒），0 表示无超时。
      *
      * 返回: CallResult 结构体，包含响应载荷和错误信息。
      */
     static CallResult Call(uint64_t task_id, const std::string& kind,
                            const std::string& target,
-                           const std::string& msg_name,
-                           const std::string& payload, int timeout_sec)
+                           const std::string& method,
+                           const std::string& params, int timeout_sec)
     {
-        char* out_payload = nullptr;
+        char* out_result = nullptr;
         int   out_len     = 0;
         char* out_error   = nullptr;
 
         const char* k = kind.empty() ? nullptr : kind.c_str();
 
-        int rc = D1_Call(task_id, k, target.c_str(), msg_name.c_str(),
-                         payload.data(), static_cast<int>(payload.size()),
-                         timeout_sec, &out_payload, &out_len, &out_error);
+        int rc = D1_Call(task_id, k, target.c_str(), method.c_str(),
+                         params.data(), static_cast<int>(params.size()),
+                         timeout_sec, &out_result, &out_len, &out_error);
 
         if (rc != 0 && !out_error) {
             // API 返回错误但没有设置 out_error，合成一个
@@ -346,8 +346,8 @@ public:
         }
 
         CallResult result;
-        if (out_payload) {
-            result.payload = Buffer(out_payload, out_len);
+        if (out_result) {
+            result.payload = Buffer(out_result, out_len);
         }
         if (out_error) {
             result.error = Buffer(out_error, static_cast<int>(strlen(out_error)));
@@ -361,23 +361,23 @@ public:
      * 参数:
      *   task_id:     任务 ID。
      *   target:      目标标识符。
-     *   msg_name:    消息名称。
-     *   payload:     请求载荷。
+     *   method:      消息名称。
+     *   params:      请求载荷。
      *   timeout_sec: 超时时间（秒）。
      *   callback:    响应回调（std::function<void(uint64_t, const char*, int, const char*)>）。
      *
      * 返回: 0 表示成功发送。
      */
     static int Request(uint64_t task_id, const std::string& target,
-                       const std::string& msg_name,
-                       const std::string& payload, int timeout_sec,
+                       const std::string& method,
+                       const std::string& params, int timeout_sec,
                        std::function<void(uint64_t, const char*, int,
                                           const char*)> callback)
     {
         if (!callback) {
-            return D1_Request(task_id, target.c_str(), msg_name.c_str(),
-                              payload.data(),
-                              static_cast<int>(payload.size()), timeout_sec,
+            return D1_Request(task_id, target.c_str(), method.c_str(),
+                              params.data(),
+                              static_cast<int>(params.size()), timeout_sec,
                               nullptr);
         }
 
@@ -388,8 +388,8 @@ public:
         s_callback = std::move(callback);
 
         return D1_Request(
-            task_id, target.c_str(), msg_name.c_str(), payload.data(),
-            static_cast<int>(payload.size()), timeout_sec,
+            task_id, target.c_str(), method.c_str(), params.data(),
+            static_cast<int>(params.size()), timeout_sec,
             [](uint64_t tid, const char* p, int plen, const char* err) {
                 if (s_callback) {
                     s_callback(tid, p, plen, err);
@@ -402,16 +402,16 @@ public:
      *
      * 参数:
      *   task_id:  任务 ID（与收到请求时一致）。
-     *   msg_name: 消息名称。
-     *   payload:  响应载荷。
+     *   method:   消息名称。
+     *   params:   响应载荷。
      *
      * 返回: 0 表示成功。
      */
-    static int Reply(uint64_t task_id, const std::string& msg_name,
-                     const std::string& payload)
+    static int Reply(uint64_t task_id, const std::string& method,
+                     const std::string& params)
     {
-        return D1_Reply(task_id, msg_name.c_str(), payload.data(),
-                        static_cast<int>(payload.size()));
+        return D1_Reply(task_id, method.c_str(), params.data(),
+                        static_cast<int>(params.size()));
     }
 
     /* ======================================================================

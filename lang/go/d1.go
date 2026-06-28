@@ -1,6 +1,6 @@
 // Package d1 提供 D1 动态库的 Go SDK 封装
 //
-// D1 SDK Go 封装 | 对应 D1 动态库版本: >= v1.2.0
+// D1 SDK Go 封装 | 对应 D1 动态库版本: >= v1.5.0
 //
 // 使用前请将 libd1.so / libd1.dylib / d1.dll 及 d1.h 放入 deps/ 目录，
 // 或通过 CGO_CFLAGS / CGO_LDFLAGS 环境变量指定头文件与库文件路径。
@@ -12,7 +12,7 @@
 //	d := d1.Default()
 //	if err := d.Init("config.json"); err != nil { ... }
 //	if err := d.Start(); err != nil { ... }
-//	d.SetDefaultHandler(func(taskID uint64, msgName string, payload []byte) ([]byte, error) {
+//	d.SetOnRequest(func(taskID uint64, method string, params []byte) ([]byte, error) {
 //	    // 处理消息
 //	    return []byte("ok"), nil
 //	})
@@ -29,7 +29,7 @@ package d1
 #include <stdlib.h>
 
 // --- 回调函数类型定义 ---
-// 默认消息处理回调（SetDefaultHandler）
+// 默认消息处理回调（SetOnRequest）
 typedef int (*d1_handler_cb_t)(uint64_t, const char*, const char*, int, char**, int*, char**);
 // 异步请求回调（Request）
 typedef void (*d1_request_cb_t)(uint64_t, const char*, int, const char*);
@@ -50,21 +50,21 @@ import (
 //
 // 当 D1 收到未匹配到特定处理器的消息时回调此函数。
 //   - taskID:  任务标识
-//   - msgName: 消息名称（UTF-8 字符串）
-//   - payload: 消息载荷（原始字节，可能为 nil）
+//   - method:  消息名称（UTF-8 字符串）
+//   - params:  方法参数（原始字节，可能为 nil）
 //
 // 返回值:
 //   - []byte: 响应载荷（nil 表示无需返回载荷）
 //   - error:  处理过程中出现的错误（将被传回调用方）
-type HandlerFunc func(taskID uint64, msgName string, payload []byte) ([]byte, error)
+type HandlerFunc func(taskID uint64, method string, params []byte) ([]byte, error)
 
 // RequestCallback D1_Request 异步请求的回调函数签名。
 //
 // 当远程目标返回响应或超时时被调用。
 //   - taskID:  原始请求的任务标识
-//   - payload: 响应载荷（可能为 nil）
+//   - params: 响应参数（可能为 nil）
 //   - err:     错误信息（成功时为 nil）
-type RequestCallback func(taskID uint64, payload []byte, err error)
+type RequestCallback func(taskID uint64, params []byte, err error)
 
 // ---------------------------------------------------------------------------
 // 内部状态管理
@@ -105,28 +105,28 @@ func Default() *D1 {
 //export goDefaultHandler
 func goDefaultHandler(
 	taskID C.uint64_t,
-	msgName *C.char,
-	payload *C.char,
+	method *C.char,
+	params *C.char,
 	payloadLen C.int,
-	outPayload **C.char,
+	outResult **C.char,
 	outLen *C.int,
 	outError **C.char,
 ) C.int {
 	handler := _defaultHandler
 	if handler == nil {
-		errStr := C.CString("no default handler set (SetDefaultHandler)")
+		errStr := C.CString("no default handler set (SetOnRequest)")
 		*outError = errStr
 		return -1
 	}
 
 	// 将 C 数据转换为 Go 类型
-	goMsgName := C.GoString(msgName)
-	var goPayload []byte
-	if payload != nil && payloadLen > 0 {
-		goPayload = C.GoBytes(unsafe.Pointer(payload), payloadLen)
+	goMethod := C.GoString(method)
+	var goParams []byte
+	if params != nil && payloadLen > 0 {
+		goParams = C.GoBytes(unsafe.Pointer(params), payloadLen)
 	}
 
-	resp, err := handler(uint64(taskID), goMsgName, goPayload)
+	resp, err := handler(uint64(taskID), goMethod, goParams)
 	if err != nil {
 		cErr := C.CString(err.Error())
 		*outError = cErr
@@ -134,7 +134,7 @@ func goDefaultHandler(
 	}
 
 	if len(resp) > 0 {
-		*outPayload = (*C.char)(C.CBytes(resp))
+		*outResult = (*C.char)(C.CBytes(resp))
 		*outLen = C.int(len(resp))
 	}
 	return 0
@@ -275,22 +275,22 @@ func (d *D1) Stop() error {
 // 示例:
 //
 //	d1.Default().WaitStop()
-func (d *D1) WaitStop() {
-	C.D1_WaitStop()
+func (d *D1) WaitStop() int {
+	return int(C.D1_WaitStop())
 }
 
-// SetDefaultHandler 设置默认消息处理器。
+// SetOnRequest 设置默认消息处理器。
 //
 // 当 D1 收到未匹配到特定路由的消息时，将调用此处理器。
 // 只需设置一次，通常在 Start 之前调用。
 //
 // 示例:
 //
-//	d1.Default().SetDefaultHandler(func(taskID uint64, msgName string, payload []byte) ([]byte, error) {
-//	    log.Printf("收到消息: %s", msgName)
+//	d1.Default().SetOnRequest(func(taskID uint64, method string, params []byte) ([]byte, error) {
+//	    log.Printf("收到消息: %s", method)
 //	    return []byte("ack"), nil
 //	})
-func (d *D1) SetDefaultHandler(handler HandlerFunc) {
+func (d *D1) SetOnRequest(handler HandlerFunc) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.handler = handler
@@ -301,21 +301,21 @@ func (d *D1) SetDefaultHandler(handler HandlerFunc) {
 //
 //   - taskID:  任务标识，用于追踪
 //   - target:  目标地址
-//   - msgName: 消息名称
-//   - payload: 消息载荷
-//
+//   - method:  消息名称
+//   - params:  方法参数
+
 // 示例:
 //
 //	err := d1.Default().Publish(1, "node/node1", "event.hello", `{"msg":"hi"}`)
-func (d *D1) Publish(taskID uint64, target, msgName, payload string) error {
+func (d *D1) Publish(taskID uint64, target, method, params string) error {
 	cTarget := C.CString(target)
 	defer C.free(unsafe.Pointer(cTarget))
-	cMsgName := C.CString(msgName)
-	defer C.free(unsafe.Pointer(cMsgName))
-	cPayload := C.CString(payload)
-	defer C.free(unsafe.Pointer(cPayload))
+	cMethod := C.CString(method)
+	defer C.free(unsafe.Pointer(cMethod))
+	cParams := C.CString(params)
+	defer C.free(unsafe.Pointer(cParams))
 
-	ret := C.D1_Publish(C.uint64_t(taskID), cTarget, cMsgName, cPayload, C.int(len(payload)))
+	ret := C.D1_Publish(C.uint64_t(taskID), cTarget, cMethod, cParams, C.int(len(params)))
 	if ret != 0 {
 		return fmt.Errorf("D1_Publish failed, error code: %d", int(ret))
 	}
@@ -327,8 +327,8 @@ func (d *D1) Publish(taskID uint64, target, msgName, payload string) error {
 //   - taskID:     任务标识
 //   - kind:       调用类型（由 D1 协议定义）
 //   - target:     目标地址
-//   - msgName:    消息名称
-//   - payload:    消息载荷
+//   - method:     消息名称
+//   - params:     方法参数
 //   - timeoutSec: 超时秒数（<=0 表示使用默认超时）
 //
 // 返回值:
@@ -338,15 +338,15 @@ func (d *D1) Publish(taskID uint64, target, msgName, payload string) error {
 // 示例:
 //
 //	resp, err := d1.Default().Call(1, 0, "node/node1", "rpc.query", `{"sql":"SELECT 1"}`, 10)
-func (d *D1) Call(taskID uint64, kind int, target, msgName, payload string, timeoutSec int) (string, error) {
+func (d *D1) Call(taskID uint64, kind int, target, method, params string, timeoutSec int) (string, error) {
 	cTarget := C.CString(target)
 	defer C.free(unsafe.Pointer(cTarget))
-	cMsgName := C.CString(msgName)
-	defer C.free(unsafe.Pointer(cMsgName))
-	cPayload := C.CString(payload)
-	defer C.free(unsafe.Pointer(cPayload))
+	cMethod := C.CString(method)
+	defer C.free(unsafe.Pointer(cMethod))
+	cParams := C.CString(params)
+	defer C.free(unsafe.Pointer(cParams))
 
-	var outPayload *C.char
+	var outResult *C.char
 	var outLen C.int
 	var outError *C.char
 
@@ -354,19 +354,19 @@ func (d *D1) Call(taskID uint64, kind int, target, msgName, payload string, time
 		C.uint64_t(taskID),
 		C.int(kind),
 		cTarget,
-		cMsgName,
-		cPayload,
-		C.int(len(payload)),
+		cMethod,
+		cParams,
+		C.int(len(params)),
 		C.int(timeoutSec),
-		&outPayload,
+		&outResult,
 		&outLen,
 		&outError,
 	)
 
 	// 释放 D1 分配的输出内存（无论成功失败均需释放）
 	defer func() {
-		if outPayload != nil {
-			C.D1_Free(unsafe.Pointer(outPayload))
+		if outResult != nil {
+			C.D1_Free(unsafe.Pointer(outResult))
 		}
 		if outError != nil {
 			C.D1_Free(unsafe.Pointer(outError))
@@ -381,18 +381,18 @@ func (d *D1) Call(taskID uint64, kind int, target, msgName, payload string, time
 		return "", fmt.Errorf("D1_Call failed, error code: %d: %s", int(ret), errMsg)
 	}
 
-	if outPayload == nil {
+	if outResult == nil {
 		return "", nil
 	}
-	return C.GoStringN(outPayload, outLen), nil
+	return C.GoStringN(outResult, outLen), nil
 }
 
 // Request 异步请求远程目标（通过回调接收响应）。
 //
 //   - taskID:     任务标识
 //   - target:     目标地址
-//   - msgName:    消息名称
-//   - payload:    消息载荷
+//   - method:     消息名称
+//   - params:     方法参数
 //   - timeoutSec: 超时秒数
 //   - callback:   收到响应或超时时回调
 //
@@ -401,14 +401,14 @@ func (d *D1) Call(taskID uint64, kind int, target, msgName, payload string, time
 // 示例:
 //
 //	err := d1.Default().Request(1, "node/node1", "async.query", `{"q":"data"}`, 10,
-//	    func(taskID uint64, payload []byte, err error) {
+//	    func(taskID uint64, params []byte, err error) {
 //	        if err != nil {
 //	            log.Printf("请求失败: %v", err)
 //	            return
 //	        }
-//	        log.Printf("响应: %s", string(payload))
+//	        log.Printf("响应: %s", string(params))
 //	    })
-func (d *D1) Request(taskID uint64, target, msgName, payload string, timeoutSec int, callback RequestCallback) error {
+func (d *D1) Request(taskID uint64, target, method, params string, timeoutSec int, callback RequestCallback) error {
 	// 注册回调 —— 在调用 C 函数前完成，避免竞态
 	_requestCallbacksMu.Lock()
 	_requestCallbacks[taskID] = callback
@@ -416,17 +416,17 @@ func (d *D1) Request(taskID uint64, target, msgName, payload string, timeoutSec 
 
 	cTarget := C.CString(target)
 	defer C.free(unsafe.Pointer(cTarget))
-	cMsgName := C.CString(msgName)
-	defer C.free(unsafe.Pointer(cMsgName))
-	cPayload := C.CString(payload)
-	defer C.free(unsafe.Pointer(cPayload))
+	cMethod := C.CString(method)
+	defer C.free(unsafe.Pointer(cMethod))
+	cParams := C.CString(params)
+	defer C.free(unsafe.Pointer(cParams))
 
 	ret := C.D1_Request(
 		C.uint64_t(taskID),
 		cTarget,
-		cMsgName,
-		cPayload,
-		C.int(len(payload)),
+		cMethod,
+		cParams,
+		C.int(len(params)),
 		C.int(timeoutSec),
 		(*C.d1_request_cb_t)(unsafe.Pointer(C.goRequestCallback)),
 	)
@@ -444,19 +444,19 @@ func (d *D1) Request(taskID uint64, target, msgName, payload string, timeoutSec 
 // Reply 回复消息（在 HandlerFunc 内部使用）。
 //
 //   - taskID:  原始请求的任务标识
-//   - msgName: 回复消息名称
-//   - payload: 回复载荷
+//   - method:  回复消息名称
+//   - params:  回复参数
 //
 // 示例:
 //
 //	err := d1.Default().Reply(taskID, "response.ok", `{"status":"done"}`)
-func (d *D1) Reply(taskID uint64, msgName, payload string) error {
-	cMsgName := C.CString(msgName)
-	defer C.free(unsafe.Pointer(cMsgName))
-	cPayload := C.CString(payload)
-	defer C.free(unsafe.Pointer(cPayload))
+func (d *D1) Reply(taskID uint64, method, params string) error {
+	cMethod := C.CString(method)
+	defer C.free(unsafe.Pointer(cMethod))
+	cParams := C.CString(params)
+	defer C.free(unsafe.Pointer(cParams))
 
-	ret := C.D1_Reply(C.uint64_t(taskID), cMsgName, cPayload, C.int(len(payload)))
+	ret := C.D1_Reply(C.uint64_t(taskID), cMethod, cParams, C.int(len(params)))
 	if ret != 0 {
 		return fmt.Errorf("D1_Reply failed, error code: %d", int(ret))
 	}

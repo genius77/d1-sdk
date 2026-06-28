@@ -1,4 +1,4 @@
-// D1 SDK Java 封装 | 对应 D1 动态库版本: ≥ v1.2.0
+// D1 SDK Java 封装 | 对应 D1 动态库版本: ≥ v1.5.0
 // 基于 JNA (Java Native Access) 实现跨平台动态库调用。
 //
 // 用法:
@@ -13,7 +13,7 @@
 //   - version() 返回的字符串为静态常量，不需要释放。
 //   - call() / cacheGet() / dbQuery() / get() 返回的字符串由 D1 分配，
 //     本 SDK 封装层自动调用 D1_Free 释放，调用者无需关心。
-//   - setDefaultHandler() 回调中通过 PointerByReference 返回的字符串由 D1 负责释放。
+//   - setOnRequest() 回调中通过 PointerByReference 返回的字符串由 D1 负责释放。
 
 package com.genius77.d1;
 
@@ -61,30 +61,30 @@ interface D1Library extends Library {
     int D1_Stop();
 
     /** 阻塞等待退出信号后自动停止。推荐用法: init() → start() → waitStop() */
-    void D1_WaitStop();
+    int D1_WaitStop();
 
     /**
      * 设置默认请求处理器。
      * @param handler 回调函数。
      */
-    void D1_SetDefaultHandler(D1.NativeOnRequestFunc handler);
+    void D1_SetOnRequest(D1.NativeOnRequestFunc handler);
 
     /**
      * 发布消息到目标（不等待响应）。
      * @return 0 成功，非零失败。
      */
-    int D1_Publish(long taskId, String target, String msgName, String payload, int payloadLen);
+    int D1_Publish(long taskId, String target, String method, String payload, int payloadLen);
 
     /**
      * 同步调用目标服务。
-     * @param outPayload 输出: 响应负载指针。
+     * @param outResult 输出: 响应负载指针。
      * @param outLen 输出: 响应负载长度。
      * @param outError 输出: 错误信息指针。
      * @return 0 成功，非零失败。
      */
-    int D1_Call(long taskId, String kind, String target, String msgName, String payload,
+    int D1_Call(long taskId, String kind, String target, String method, String payload,
                 int payloadLen, int timeoutSec,
-                PointerByReference outPayload, IntByReference outLen,
+                PointerByReference outResult, IntByReference outLen,
                 PointerByReference outError);
 
     /**
@@ -92,14 +92,14 @@ interface D1Library extends Library {
      * @param callback 响应回调函数。
      * @return 0 成功，非零失败。
      */
-    int D1_Request(long taskId, String target, String msgName, String payload,
+    int D1_Request(long taskId, String target, String method, String payload,
                    int payloadLen, int timeoutSec, D1.NativeOnResponse callback);
 
     /**
      * 回复当前请求。
      * @return 0 成功，非零失败。
      */
-    int D1_Reply(long taskId, String msgName, String payload, int payloadLen);
+    int D1_Reply(long taskId, String method, String payload, int payloadLen);
 
     /**
      * 从缓存中获取键值。
@@ -234,12 +234,12 @@ public final class D1 {
 
     /**
      * JNA 原生默认请求处理回调。适配 C 函数签名:
-     * <pre>int (*)(uint64_t task_id, const char* msg_name, const char* payload, int payload_len,
-     *          char** out_payload, int* out_len, char** out_error)</pre>
+     * <pre>int (*)(uint64_t task_id, const char* method, const char* payload, int payload_len,
+     *          char** out_result, int* out_len, char** out_error)</pre>
      */
     public interface NativeOnRequestFunc extends Callback {
-        int invoke(long taskId, String msgName, String payload, int payloadLen,
-                   PointerByReference outPayload, IntByReference outLen,
+        int invoke(long taskId, String method, String payload, int payloadLen,
+                   PointerByReference outResult, IntByReference outLen,
                    PointerByReference outError);
     }
 
@@ -259,11 +259,11 @@ public final class D1 {
         /**
          * 处理请求。
          * @param taskId   任务 ID。
-         * @param msgName  消息名称。
+         * @param method  消息名称。
          * @param payload  请求负载。
          * @return 返回一个 Object[] 数组: [0]=响应负载(String), [1]=错误信息(String 或 null), [2]=返回码(Integer)。
          */
-        Object[] handle(long taskId, String msgName, String payload);
+        Object[] handle(long taskId, String method, String payload);
     }
 
     /**
@@ -426,8 +426,8 @@ public final class D1 {
      * 阻塞等待退出信号（Ctrl+C），收到信号后自动调用 stop()。
      * 推荐用法: init() → start() → waitStop() → 进程退出
      */
-    public static void waitStop() {
-        lib.D1_WaitStop();
+    public static int waitStop() {
+        return lib.D1_WaitStop();
     }
 
     /**
@@ -436,17 +436,17 @@ public final class D1 {
      * @param handler 请求处理回调，不能为 null。
      * @throws IllegalArgumentException handler 为 null 时抛出。
      */
-    public static void setDefaultHandler(RequestHandler handler) {
+    public static void setOnRequest(RequestHandler handler) {
         if (handler == null) {
             throw new IllegalArgumentException("handler 不能为 null");
         }
 
         requestHandlerRef = handler;
 
-        nativeRequestHandlerRef = (taskId, msgName, payload, payloadLen,
-                outPayload, outLen, outError) -> {
+        nativeRequestHandlerRef = (taskId, method, payload, payloadLen,
+                outResult, outLen, outError) -> {
             // 调用用户处理器
-            Object[] result = handler.handle(taskId, msgName, payload);
+            Object[] result = handler.handle(taskId, method, payload);
             String pl = (String) result[0];
             String err = result.length > 1 ? (String) result[1] : null;
             int retCode = result.length > 2 ? (Integer) result[2] : 0;
@@ -456,10 +456,10 @@ public final class D1 {
                 byte[] bytes = pl.getBytes(StandardCharsets.UTF_8);
                 Memory mem = new Memory(bytes.length);
                 mem.write(0, bytes, 0, bytes.length);
-                outPayload.setValue(mem);
+                outResult.setValue(mem);
                 outLen.setValue(bytes.length);
             } else {
-                outPayload.setValue(Pointer.NULL);
+                outResult.setValue(Pointer.NULL);
                 outLen.setValue(0);
             }
 
@@ -476,20 +476,20 @@ public final class D1 {
             return retCode;
         };
 
-        lib.D1_SetDefaultHandler(nativeRequestHandlerRef);
+        lib.D1_SetOnRequest(nativeRequestHandlerRef);
     }
 
     /**
      * 发布（推送）消息到指定目标，不等待响应。
      * @param taskId  任务 ID。
      * @param target  目标标识。
-     * @param msgName 消息名称。
+     * @param method 消息名称。
      * @param payload 消息负载，可为 null。
      * @throws D1Exception 发布失败时抛出。
      */
-    public static void publish(long taskId, String target, String msgName, String payload) {
+    public static void publish(long taskId, String target, String method, String payload) {
         int len = utf8ByteLength(payload);
-        int ret = lib.D1_Publish(taskId, target, msgName, payload, len);
+        int ret = lib.D1_Publish(taskId, target, method, payload, len);
         throwIfError(ret, "Publish");
     }
 
@@ -498,22 +498,22 @@ public final class D1 {
      * @param taskId     任务 ID。
      * @param kind       调用类型（如 "rpc"）。
      * @param target     目标标识。
-     * @param msgName    消息名称。
+     * @param method    消息名称。
      * @param payload    请求负载，可为 null。
      * @param timeoutSec 超时时间（秒），0 表示不超时。
      * @return 包含返回码、负载和错误信息的 CallResult。
      */
-    public static CallResult call(long taskId, String kind, String target, String msgName,
+    public static CallResult call(long taskId, String kind, String target, String method,
                                    String payload, int timeoutSec) {
         int payloadLen = utf8ByteLength(payload);
-        PointerByReference outPayload = new PointerByReference();
+        PointerByReference outResult = new PointerByReference();
         IntByReference outLen = new IntByReference();
         PointerByReference outError = new PointerByReference();
 
-        int ret = lib.D1_Call(taskId, kind, target, msgName, payload,
-                payloadLen, timeoutSec, outPayload, outLen, outError);
+        int ret = lib.D1_Call(taskId, kind, target, method, payload,
+                payloadLen, timeoutSec, outResult, outLen, outError);
 
-        String pl = ptrToStringAndFree(outPayload.getValue(), outLen.getValue());
+        String pl = ptrToStringAndFree(outResult.getValue(), outLen.getValue());
         String err = ptrToStringAndFree(outError.getValue(), 0);
 
         return new CallResult(ret, pl, err);
@@ -523,14 +523,14 @@ public final class D1 {
      * 异步请求目标服务，通过回调接收响应。
      * @param taskId     任务 ID。
      * @param target     目标标识。
-     * @param msgName    消息名称。
+     * @param method    消息名称。
      * @param payload    请求负载，可为 null。
      * @param timeoutSec 超时时间（秒）。
      * @param callback   响应回调，不能为 null。
      * @throws IllegalArgumentException callback 为 null 时抛出。
      * @throws D1Exception 请求发送失败时抛出。
      */
-    public static void request(long taskId, String target, String msgName,
+    public static void request(long taskId, String target, String method,
                                 String payload, int timeoutSec, ResponseCallback callback) {
         if (callback == null) {
             throw new IllegalArgumentException("callback 不能为 null");
@@ -543,7 +543,7 @@ public final class D1 {
             callback.onResponse(tId, pl, err);
         };
 
-        int ret = lib.D1_Request(taskId, target, msgName, payload,
+        int ret = lib.D1_Request(taskId, target, method, payload,
                 payloadLen, timeoutSec, cb);
         throwIfError(ret, "Request");
     }
@@ -551,13 +551,13 @@ public final class D1 {
     /**
      * 在当前请求处理上下文中回复消息。
      * @param taskId  任务 ID。
-     * @param msgName 消息名称。
+     * @param method 消息名称。
      * @param payload 回复负载，可为 null。
      * @throws D1Exception 回复失败时抛出。
      */
-    public static void reply(long taskId, String msgName, String payload) {
+    public static void reply(long taskId, String method, String payload) {
         int len = utf8ByteLength(payload);
-        int ret = lib.D1_Reply(taskId, msgName, payload, len);
+        int ret = lib.D1_Reply(taskId, method, payload, len);
         throwIfError(ret, "Reply");
     }
 
