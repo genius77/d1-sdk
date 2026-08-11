@@ -319,6 +319,7 @@
             <li><a href="#ch3-3">JSON-RPC 请求</a></li>
             <li><a href="#ch3-4">JSON-RPC 响应</a></li>
             <li><a href="#ch3-5">stderr 日志</a></li>
+            <li><a href="#ch3-6">stdio 缓冲注意事项</a></li>
           </ol>
         </li>
         <li><a href="#ch4">API 参考</a>
@@ -560,6 +561,84 @@ items:
 [WARN]  deprecated API used
 [ERROR] file not found</code></pre>
         <p>支持的级别：<code>debug</code>、<code>info</code>、<code>warn</code>、<code>error</code>、<code>fatal</code>。无前缀的行默认为 <code>info</code> 级别。</p>
+
+        <!-- 3.6 stdio 缓冲注意事项 -->
+        <h3 id="ch3-6">3.6 stdio 缓冲注意事项</h3>
+        <p>D1 通过管道（pipe）与扩展进程通信，stdout <strong>不是终端（TTY）</strong>。大多数 C 运行时和高级语言在检测到 stdout 为非 TTY 时，默认采用<strong>全缓冲（block buffering）</strong>：数据先堆积在用户态缓冲区，直到缓冲区满或进程退出才写入管道。这会导致 D1 收不到响应，最终超时甚至死锁。</p>
+
+        <div class="callout warn">
+          <p><strong>核心规则</strong>每写完一个 LSP 帧（即一条完整响应）到 stdout 后，必须确保数据已刷入操作系统（flush 用户态缓冲），再阻塞等待下一次 stdin 输入。</p>
+        </div>
+
+        <h4>各语言处理方式</h4>
+        <table>
+          <thead>
+            <tr>
+              <th>语言</th>
+              <th>默认缓冲行为（非 TTY）</th>
+              <th>推荐做法</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>C</strong></td>
+              <td>全缓冲（glibc）</td>
+              <td>启动时 <code>setvbuf(stdout, NULL, _IONBF, 0)</code> 禁用缓冲；或每次写完后 <code>fflush(stdout)</code>；或直接用 <code>write(STDOUT_FILENO, &hellip;)</code> 绕过 stdio</td>
+            </tr>
+            <tr>
+              <td><strong>C++</strong></td>
+              <td>全缓冲</td>
+              <td><code>std::cout.setf(std::ios::unitbuf)</code>（每次写后自动 flush）；或手动 <code>std::cout &lt;&lt; std::flush</code></td>
+            </tr>
+            <tr>
+              <td><strong>Python</strong></td>
+              <td>全缓冲</td>
+              <td>每次响应后 <code>sys.stdout.flush()</code>；或 <code>print(&hellip;, flush=True)</code></td>
+            </tr>
+            <tr>
+              <td><strong>Go</strong></td>
+              <td>无用户态缓冲</td>
+              <td><code>os.Stdout.Write()</code> / <code>fmt.Fprint(os.Stdout, &hellip;)</code> 直接走 <code>write()</code> 系统调用，默认安全。若用 <code>bufio.Writer</code> 需 <code>Flush()</code></td>
+            </tr>
+            <tr>
+              <td><strong>Bash/Shell</strong></td>
+              <td>无缓冲</td>
+              <td><code>printf</code> 直接写 fd 1，默认安全。注意子进程（如 <code>python3 -c</code>）自身仍可能缓冲</td>
+            </tr>
+            <tr>
+              <td><strong>Node.js</strong></td>
+              <td>同步写</td>
+              <td><code>process.stdout.write()</code> 对管道同步写入，默认安全</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div class="callout warn">
+          <p><strong>死锁场景</strong>若扩展进程在等待 stdin 下一条请求时，上一条响应仍滞留在 stdout 用户态缓冲区，D1 端会因收不到响应而阻塞，扩展端也会因 D1 不发新请求而阻塞——双方互等，形成死锁。表现：服务无响应、超时、最终被 recovery 强制重启。</p>
+        </div>
+
+        <h4>C 语言示例（禁用缓冲）</h4>
+        <pre><code>#include &lt;stdio.h&gt;
+#include &lt;string.h&gt;
+
+int main(void) {
+    /* 禁用 stdout 缓冲——在程序入口最先执行 */
+    setvbuf(stdout, NULL, _IONBF, 0);
+
+    /* 之后所有 printf/fwrite 都会立即写入管道 */
+    const char *frame = "Content-Length: 21\r\n\r\n{\"jsonrpc\":\"2.0\"}";
+    fwrite(frame, 1, strlen(frame), stdout);
+    /* 无需 fflush，因为已禁用缓冲 */
+    return 0;
+}</code></pre>
+
+        <p>或在每次写入后手动 flush（不禁用缓冲）：</p>
+        <pre><code>fwrite(frame, 1, len, stdout);
+fflush(stdout);  /* 关键：刷入管道 */</code></pre>
+
+        <div class="callout info">
+          <p>本节适用于<strong>所有基于 stdio 传输的扩展</strong>，包括 Exec 扩展和 Service 扩展的 stdio 模式（见 <a href="sdk-service.html#s3-7">SDK-03 &sect;3.7</a>）。gRPC 模式走 TCP socket，不受此问题影响。</p>
+        </div>
       </section>
 
       <!-- Chapter 4: API 参考 -->

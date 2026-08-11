@@ -36,6 +36,8 @@
 - **sdk-host.html** (SDK-05) / **sdk-integration.html** (SDK-06): 日期同步至 2026-08-11
 - **config/connector.yaml**: 注释中 `Publish` → `Notify`
 - **README.md**: 文档目录编号修正（SDK-01~06 与实际 HTML 标题对齐）
+- **sdk-exec.html** (SDK-01): 新增 §3.6「stdio 缓冲注意事项」——覆盖 C/C++/Python/Go/Bash/Node.js 各语言的 stdout 缓冲行为与 flush 处理方式，含 C 语言示例与死锁场景说明
+- **sdk-service.html** (SDK-03): 新增 §3.7「传输模式与 stdio 缓冲」——补充 `transport: grpc`/`stdio` 两种传输模式说明、stdio 缓冲陷阱、各语言处理方式表与 C 语言示例；配置表补充 `items[].transport` 字段
 
 ### 依赖
 - 对应 D1 动态库版本: **≥ v1.7.0**
