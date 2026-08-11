@@ -277,9 +277,9 @@
   <!-- ═══════════════════ HEADER ═══════════════════ -->
   <header class="page-header">
     <h1>D1 内部集成指南</h1>
-    <p class="subtitle">SDK-06 · v1.5.0</p>
+    <p class="subtitle">SDK-06 · v1.7.0</p>
     <span class="badge">Go 直接引入</span>
-    <p class="meta">版本 v1.5.0 · 2026-06-25</p>
+    <p class="meta">版本 v1.7.0 · 2026-08-11 · 适用于 D1 ≥ v1.7.0</p>
   </header>
 
   <!-- ═══════════════════ TOC ═══════════════════ -->
@@ -343,7 +343,7 @@ func main() {
     log.Printf("D1 Version: %s", d1.Version)
 
     // 设置默认消息处理器
-    d.OnRequest(func(ctx *d1.Context, req *d1.Request) (*d1.Response, error) {
+    d.SetOnCall(func(ctx *d1.Context, req *d1.Request) (*d1.Response, error) {
         ctx.Info("收到消息: " + req.Method)
         return d1.NewResponse(json.RawMessage(`{"ok":true}`)), nil
     })
@@ -364,10 +364,10 @@ func main() {
     <h2>3. 协议规范</h2>
 
     <h3 id="ch3-1">3.1 消息处理</h3>
-    <p>通过 <code>OnRequest</code> 设置全局消息处理器，所有未匹配到特定路由的消息都会回调此处理器：</p>
+    <p>通过 <code>SetOnCall</code> 设置全局消息处理器，所有未匹配到特定路由的消息都会回调此处理器：</p>
     <pre><code>type HandlerFunc func(ctx *Context, req *Request) (*Response, error)
 
-d.OnRequest(func(ctx *d1.Context, req *d1.Request) (*d1.Response, error) {
+d.SetOnCall(func(ctx *d1.Context, req *d1.Request) (*d1.Response, error) {
     // req.Method: 消息名称
     // req.Params: 业务参数（json.RawMessage）
     return d1.NewResponse(rawResult), nil
@@ -444,7 +444,7 @@ func (d *D1) Stop() error
 func (d *D1) WaitStop()
 
 // 消息处理器
-func (d *D1) OnRequest(handler HandlerFunc)
+func (d *D1) SetOnCall(handler HandlerFunc)
 
 // 生命周期钩子
 type LifecycleFunc func(ctx *Context) error
@@ -456,8 +456,8 @@ func (d *D1) OnStop(hook LifecycleFunc)
 const Version</code></pre>
 
     <h3 id="ch4-2">4.2 消息 API</h3>
-    <pre><code>// Publish 发送单向消息（无回复），仅 conn 模式
-func (c *Context) Publish(target, method string, params []byte) error
+    <pre><code>// Notify 发送单向消息（无回复），仅 conn 模式
+func (c *Context) Notify(target, method string, params []byte) error
 
 // Request 异步请求，结果通过 onResponse 回调
 func (c *Context) Request(target, method string, params []byte, timeout time.Duration, onResponse func(*Response)) error
@@ -540,7 +540,7 @@ func (c *Context) Get(key string) interface{}</code></pre>
     <h3>引入</h3>
     <pre><code>go get github.com/genius77/d1</code></pre>
     <pre><code>// go.mod
-require github.com/genius77/d1 v1.5.0</code></pre>
+require github.com/genius77/d1 v1.7.0</code></pre>
 
     <h3>编译</h3>
     <pre><code>go build -o myapp ./cmd/myapp/</code></pre>
@@ -595,7 +595,7 @@ func main() {
         return nil
     })
 
-    d.OnRequest(func(ctx *d1.Context, req *d1.Request) (*d1.Response, error) {
+    d.SetOnCall(func(ctx *d1.Context, req *d1.Request) (*d1.Response, error) {
         switch req.Method {
         case "sensor.data":
             var params struct {
@@ -607,7 +607,7 @@ func main() {
             if params.Temperature > 30 {
                 ctx.Warn("high temperature: " + string(req.Params))
                 // 发布报警
-                ctx.Publish("mqtt_client", "alert.temp", req.Params)
+                ctx.Notify("mqtt_client", "alert.temp", req.Params)
             }
 
             return nil, nil
@@ -685,7 +685,7 @@ func main() {
 
   <!-- ═══════════════════ FOOTER ═══════════════════ -->
   <footer class="page-footer">
-    &copy; D1 Project · SDK-06 内部集成指南 · v1.5.0 · 2026-06-25
+    &copy; D1 Project · SDK-06 内部集成指南 · v1.7.0 · 2026-08-11
   </footer>
 
 </div>

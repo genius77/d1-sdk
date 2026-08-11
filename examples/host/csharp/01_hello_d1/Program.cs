@@ -4,15 +4,16 @@
  * 本示例演示 D1 C# SDK 的完整用法：
  *   1. 获取版本号
  *   2. 初始化 D1 运行时
- *   3. 设置默认消息处理器（演示 API：Publish、Call、CacheSet/CacheGet、DBQuery）
+ *   3. 设置默认消息处理器（演示 API：Notify、Call、CacheSet/CacheGet、DBQuery）
  *   4. 启动 D1
  *   5. 阻塞等待退出（Ctrl+C）
  *
- * D1 动态库依赖: >= v1.5.0
+ * D1 动态库依赖: >= v1.7.0
  */
 
 using System;
 using System.Text.Json;
+using Genius77.D1;
 
 class Program
 {
@@ -24,10 +25,10 @@ class Program
     {
         Console.WriteLine($"[Handler] taskID={taskId} | method={method} | payload={payload ?? "null"}");
 
-        /* ── 1. Publish — 发送单向消息（无回复） ── */
+        /* ── 1. Notify — 发送单向消息（无回复） ── */
         var pubData = JsonSerializer.Serialize(new { temp = 25.5, unit = "celsius" });
-        D1.Publish(taskId, "mqtt_client", "sensor.data", pubData);
-        Console.WriteLine("  D1_Publish -> OK");
+        D1.Notify(taskId, "mqtt_client", "sensor.data", pubData);
+        Console.WriteLine("  D1_Notify -> OK");
 
         /* ── 2. CacheSet — 写入缓存 ── */
         var cacheVal = JsonSerializer.Serialize(new { name = "Alice", role = "admin" });
@@ -69,7 +70,7 @@ class Program
         Console.WriteLine("D1::Init OK");
 
         /* 3. 设置默认消息处理器 */
-        D1.SetOnRequest(DefaultHandler);
+        D1.SetOnCall(DefaultHandler);
         Console.WriteLine("Default handler registered");
 
         /* 4. 启动 D1 运行时 */

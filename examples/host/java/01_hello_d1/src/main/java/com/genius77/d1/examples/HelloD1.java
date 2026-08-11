@@ -4,11 +4,11 @@
  * 本示例演示 D1 Java SDK 的完整用法：
  *   1. 获取版本号
  *   2. 初始化 D1 运行时
- *   3. 设置默认消息处理器（演示 API：Publish、Call、CacheSet/CacheGet、DBQuery）
+ *   3. 设置默认消息处理器（演示 API：Notify、Call、CacheSet/CacheGet、DBQuery）
  *   4. 启动 D1
  *   5. 阻塞等待退出（Ctrl+C）
  *
- * D1 动态库依赖: >= v1.5.0
+ * D1 动态库依赖: >= v1.7.0
  */
 
 package com.genius77.d1.examples;
@@ -24,14 +24,14 @@ public class HelloD1 {
      */
     static class DefaultHandler implements RequestHandler {
         @Override
-        public Object[] handle(long taskId, String method, String payload) {
+        public Object[] handle(long taskId, String method, String params) {
             System.out.println("[Handler] taskID=" + taskId +
-                " | method=" + method + " | payload=" + (payload != null ? payload : "null"));
+                " | method=" + method + " | params=" + (params != null ? params : "null"));
 
-            /* ── 1. Publish — 发送单向消息（无回复） ── */
-            D1.publish(taskId, "mqtt_client", "sensor.data",
+            /* ── 1. Notify — 发送单向消息（无回复） ── */
+            D1.notify(taskId, "mqtt_client", "sensor.data",
                        "{\"temp\":25.5,\"unit\":\"celsius\"}");
-            System.out.println("  D1_Publish -> OK");
+            System.out.println("  D1_Notify -> OK");
 
             /* ── 2. CacheSet — 写入缓存 ── */
             D1.cacheSet(taskId, "user:42",
@@ -76,8 +76,8 @@ public class HelloD1 {
         System.out.println("D1::init OK");
 
         /* 3. 设置消息处理器 */
-        D1.setOnRequest(new DefaultHandler());
-        System.out.println("OnRequest handler registered");
+        D1.setOnCall(new DefaultHandler());
+        System.out.println("OnCall handler registered");
 
         /* 4. 启动 D1 运行时 */
         D1.start();

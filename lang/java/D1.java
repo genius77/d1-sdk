@@ -1,19 +1,19 @@
-// D1 SDK Java 封装 | 对应 D1 动态库版本: ≥ v1.5.0
+// D1 SDK Java 封装 | 对应 D1 动态库版本: ≥ v1.7.0
 // 基于 JNA (Java Native Access) 实现跨平台动态库调用。
 //
 // 用法:
 //   1. 在 pom.xml 中添加 JNA 依赖: net.java.dev.jna:jna:5.14.0
 //   2. 将动态库放入 deps/ 目录:
-//        Windows: deps/D1.dll
-//        Linux:   deps/libD1.so
-//        macOS:   deps/libD1.dylib
+//        Windows: deps/d1.dll
+//        Linux:   deps/libd1.so
+//        macOS:   deps/libd1.dylib
 //   3. 代码中 import com.genius77.d1.D1 即可使用。
 //
 // 内存管理说明:
 //   - version() 返回的字符串为静态常量，不需要释放。
 //   - call() / cacheGet() / dbQuery() / get() 返回的字符串由 D1 分配，
 //     本 SDK 封装层自动调用 D1_Free 释放，调用者无需关心。
-//   - setOnRequest() 回调中通过 PointerByReference 返回的字符串由 D1 负责释放。
+//   - setOnCall() 回调中通过 PointerByReference 返回的字符串由 D1 负责释放。
 
 package com.genius77.d1;
 
@@ -32,7 +32,7 @@ import com.sun.jna.ptr.PointerByReference;
 
 /**
  * D1 C 动态库的 JNA 映射接口。
- * 包含全部 17 个 C API 函数的声明，供内部使用。
+ * 包含全部 C API 函数的声明，供内部使用。
  */
 interface D1Library extends Library {
 
@@ -67,13 +67,36 @@ interface D1Library extends Library {
      * 设置默认请求处理器。
      * @param handler 回调函数。
      */
-    void D1_SetOnRequest(D1.NativeOnRequestFunc handler);
+    void D1_SetOnCall(D1.NativeCallFunc handler);
 
     /**
-     * 发布消息到目标（不等待响应）。
+     * 注册 Init 阶段回调（组件初始化完成后调用）。
+     * @param handler 生命周期回调函数。
+     */
+    void D1_SetOnInit(D1.NativeLifecycleFunc handler);
+
+    /**
+     * 注册 Start 阶段回调（连接启动前调用）。
+     * @param handler 生命周期回调函数。
+     */
+    void D1_SetOnStart(D1.NativeLifecycleFunc handler);
+
+    /**
+     * 注册 Stop 阶段回调（连接断开后调用）。
+     * @param handler 生命周期回调函数。
+     */
+    void D1_SetOnStop(D1.NativeLifecycleFunc handler);
+
+    /**
+     * 将外部请求转入 D1 管道处理。
+     */
+    void D1_HandleRequest(String method, String params, int paramsLen);
+
+    /**
+     * 发送单向消息到目标（不等待响应）。
      * @return 0 成功，非零失败。
      */
-    int D1_Publish(long taskId, String target, String method, String payload, int payloadLen);
+    int D1_Notify(long taskId, String target, String method, String params, int paramsLen);
 
     /**
      * 同步调用目标服务。
@@ -82,8 +105,8 @@ interface D1Library extends Library {
      * @param outError 输出: 错误信息指针。
      * @return 0 成功，非零失败。
      */
-    int D1_Call(long taskId, String kind, String target, String method, String payload,
-                int payloadLen, int timeoutSec,
+    int D1_Call(long taskId, String kind, String target, String method, String params,
+                int paramsLen, int timeoutSec,
                 PointerByReference outResult, IntByReference outLen,
                 PointerByReference outError);
 
@@ -92,14 +115,14 @@ interface D1Library extends Library {
      * @param callback 响应回调函数。
      * @return 0 成功，非零失败。
      */
-    int D1_Request(long taskId, String target, String method, String payload,
-                   int payloadLen, int timeoutSec, D1.NativeOnResponse callback);
+    int D1_Request(long taskId, String target, String method, String params,
+                   int paramsLen, int timeoutSec, D1.NativeOnResponse callback);
 
     /**
      * 回复当前请求。
      * @return 0 成功，非零失败。
      */
-    int D1_Reply(long taskId, String method, String payload, int payloadLen);
+    int D1_Reply(long taskId, String method, String params, int paramsLen);
 
     /**
      * 从缓存中获取键值。
@@ -234,21 +257,29 @@ public final class D1 {
 
     /**
      * JNA 原生默认请求处理回调。适配 C 函数签名:
-     * <pre>int (*)(uint64_t task_id, const char* method, const char* payload, int payload_len,
+     * <pre>int (*)(uint64_t task_id, const char* method, const char* params, int params_len,
      *          char** out_result, int* out_len, char** out_error)</pre>
      */
-    public interface NativeOnRequestFunc extends Callback {
-        int invoke(long taskId, String method, String payload, int payloadLen,
+    public interface NativeCallFunc extends Callback {
+        int invoke(long taskId, String method, String params, int paramsLen,
                    PointerByReference outResult, IntByReference outLen,
                    PointerByReference outError);
     }
 
     /**
+     * JNA 原生生命周期回调（Init/Start/Stop 阶段）。适配 C 函数签名:
+     * <pre>int (*)(uint64_t task_id)</pre>
+     */
+    public interface NativeLifecycleFunc extends Callback {
+        int invoke(long taskId);
+    }
+
+    /**
      * JNA 原生异步响应回调。适配 C 函数签名:
-     * <pre>void (*)(uint64_t task_id, const char* payload, int payload_len, const char* error)</pre>
+     * <pre>void (*)(uint64_t task_id, const char* params, int params_len, const char* error)</pre>
      */
     public interface NativeOnResponse extends Callback {
-        void invoke(long taskId, String payload, int payloadLen, String error);
+        void invoke(long taskId, String params, int paramsLen, String error);
     }
 
     /**
@@ -260,10 +291,10 @@ public final class D1 {
          * 处理请求。
          * @param taskId   任务 ID。
          * @param method  消息名称。
-         * @param payload  请求负载。
-         * @return 返回一个 Object[] 数组: [0]=响应负载(String), [1]=错误信息(String 或 null), [2]=返回码(Integer)。
+         * @param params   请求参数。
+         * @return 返回一个 Object[] 数组: [0]=响应参数(String), [1]=错误信息(String 或 null), [2]=返回码(Integer)。
          */
-        Object[] handle(long taskId, String method, String payload);
+        Object[] handle(long taskId, String method, String params);
     }
 
     /**
@@ -274,10 +305,23 @@ public final class D1 {
         /**
          * 接收响应。
          * @param taskId  任务 ID。
-         * @param payload 响应负载，可能为 null。
+         * @param params 响应参数，可能为 null。
          * @param error   错误信息，可能为 null。
          */
-        void onResponse(long taskId, String payload, String error);
+        void onResponse(long taskId, String params, String error);
+    }
+
+    /**
+     * 用户友好的生命周期回调函数式接口（Init/Start/Stop 阶段）。
+     */
+    @FunctionalInterface
+    public interface LifecycleHandler {
+        /**
+         * 生命周期回调。
+         * @param taskId 任务 ID。
+         * @return 返回 0 表示成功，非零表示失败。
+         */
+        int onLifecycle(long taskId);
     }
 
     // ========================================================================
@@ -286,7 +330,15 @@ public final class D1 {
 
     private static final D1Library lib;
     private static RequestHandler requestHandlerRef;
-    private static NativeOnRequestFunc nativeRequestHandlerRef;
+    private static NativeCallFunc nativeCallHandlerRef;
+
+    // 生命周期回调存活引用（防止 GC 回收）
+    private static LifecycleHandler onInitHandlerRef;
+    private static NativeLifecycleFunc nativeOnInitRef;
+    private static LifecycleHandler onStartHandlerRef;
+    private static NativeLifecycleFunc nativeOnStartRef;
+    private static LifecycleHandler onStopHandlerRef;
+    private static NativeLifecycleFunc nativeOnStopRef;
 
     static {
         loadLibrary();
@@ -307,23 +359,23 @@ public final class D1 {
         for (String path : searchPaths) {
             File dir = new File(path);
             if (dir.exists() && dir.isDirectory()) {
-                NativeLibrary.addSearchPath("D1", dir.getAbsolutePath());
+                NativeLibrary.addSearchPath("d1", dir.getAbsolutePath());
                 found = true;
                 break;
             }
         }
 
         try {
-            lib = Native.load("D1", D1Library.class);
+            lib = Native.load("d1", D1Library.class);
         } catch (UnsatisfiedLinkError e) {
             String os = System.getProperty("os.name", "").toLowerCase();
             String libName;
             if (os.contains("win")) {
-                libName = "D1.dll";
+                libName = "d1.dll";
             } else if (os.contains("mac")) {
-                libName = "libD1.dylib";
+                libName = "libd1.dylib";
             } else {
-                libName = "libD1.so";
+                libName = "libd1.so";
             }
 
             StringBuilder msg = new StringBuilder();
@@ -436,27 +488,29 @@ public final class D1 {
      * @param handler 请求处理回调，不能为 null。
      * @throws IllegalArgumentException handler 为 null 时抛出。
      */
-    public static void setOnRequest(RequestHandler handler) {
+    public static void setOnCall(RequestHandler handler) {
         if (handler == null) {
             throw new IllegalArgumentException("handler 不能为 null");
         }
 
         requestHandlerRef = handler;
 
-        nativeRequestHandlerRef = (taskId, method, payload, payloadLen,
+        nativeCallHandlerRef = (taskId, method, params, paramsLen,
                 outResult, outLen, outError) -> {
             // 调用用户处理器
-            Object[] result = handler.handle(taskId, method, payload);
+            Object[] result = handler.handle(taskId, method, params);
             String pl = (String) result[0];
             String err = result.length > 1 ? (String) result[1] : null;
             int retCode = result.length > 2 ? (Integer) result[2] : 0;
 
-            // 将响应负载写入非托管内存（D1 负责释放）
+            // 将响应参数写入非托管内存（D1 负责释放）
             if (pl != null && !pl.isEmpty()) {
                 byte[] bytes = pl.getBytes(StandardCharsets.UTF_8);
                 Memory mem = new Memory(bytes.length);
                 mem.write(0, bytes, 0, bytes.length);
                 outResult.setValue(mem);
+                // 阻止 JNA Memory finalizer 释放此内存（D1 将通过 D1_Free 释放）
+                Pointer.nativeValue(mem, 0);
                 outLen.setValue(bytes.length);
             } else {
                 outResult.setValue(Pointer.NULL);
@@ -469,6 +523,7 @@ public final class D1 {
                 Memory mem = new Memory(bytes.length);
                 mem.write(0, bytes, 0, bytes.length);
                 outError.setValue(mem);
+                Pointer.nativeValue(mem, 0);
             } else {
                 outError.setValue(Pointer.NULL);
             }
@@ -476,21 +531,91 @@ public final class D1 {
             return retCode;
         };
 
-        lib.D1_SetOnRequest(nativeRequestHandlerRef);
+        lib.D1_SetOnCall(nativeCallHandlerRef);
     }
 
     /**
-     * 发布（推送）消息到指定目标，不等待响应。
+     * 将外部请求转入 D1 管道处理。
+     * @param method  消息方法名。
+     * @param params 消息参数，可为 null。
+     */
+    public static void handleRequest(String method, String params) {
+        int len = utf8ByteLength(params);
+        lib.D1_HandleRequest(method, params, len);
+    }
+
+    /**
+     * 注册 Init 阶段回调（组件初始化完成后调用）。
+     * @param handler 生命周期回调，不能为 null。
+     * @throws IllegalArgumentException handler 为 null 时抛出。
+     */
+    public static void setOnInit(LifecycleHandler handler) {
+        if (handler == null) {
+            throw new IllegalArgumentException("handler 不能为 null");
+        }
+        onInitHandlerRef = handler;
+        nativeOnInitRef = taskId -> {
+            try {
+                return handler.onLifecycle(taskId);
+            } catch (Exception e) {
+                return -1;
+            }
+        };
+        lib.D1_SetOnInit(nativeOnInitRef);
+    }
+
+    /**
+     * 注册 Start 阶段回调（连接启动前调用）。
+     * @param handler 生命周期回调，不能为 null。
+     * @throws IllegalArgumentException handler 为 null 时抛出。
+     */
+    public static void setOnStart(LifecycleHandler handler) {
+        if (handler == null) {
+            throw new IllegalArgumentException("handler 不能为 null");
+        }
+        onStartHandlerRef = handler;
+        nativeOnStartRef = taskId -> {
+            try {
+                return handler.onLifecycle(taskId);
+            } catch (Exception e) {
+                return -1;
+            }
+        };
+        lib.D1_SetOnStart(nativeOnStartRef);
+    }
+
+    /**
+     * 注册 Stop 阶段回调（连接断开后调用）。
+     * @param handler 生命周期回调，不能为 null。
+     * @throws IllegalArgumentException handler 为 null 时抛出。
+     */
+    public static void setOnStop(LifecycleHandler handler) {
+        if (handler == null) {
+            throw new IllegalArgumentException("handler 不能为 null");
+        }
+        onStopHandlerRef = handler;
+        nativeOnStopRef = taskId -> {
+            try {
+                return handler.onLifecycle(taskId);
+            } catch (Exception e) {
+                return -1;
+            }
+        };
+        lib.D1_SetOnStop(nativeOnStopRef);
+    }
+
+    /**
+     * 发送单向消息到指定目标，不等待响应。
      * @param taskId  任务 ID。
      * @param target  目标标识。
      * @param method 消息名称。
-     * @param payload 消息负载，可为 null。
-     * @throws D1Exception 发布失败时抛出。
+     * @param params 消息参数，可为 null。
+     * @throws D1Exception 发送失败时抛出。
      */
-    public static void publish(long taskId, String target, String method, String payload) {
-        int len = utf8ByteLength(payload);
-        int ret = lib.D1_Publish(taskId, target, method, payload, len);
-        throwIfError(ret, "Publish");
+    public static void notify(long taskId, String target, String method, String params) {
+        int len = utf8ByteLength(params);
+        int ret = lib.D1_Notify(taskId, target, method, params, len);
+        throwIfError(ret, "Notify");
     }
 
     /**
@@ -499,19 +624,19 @@ public final class D1 {
      * @param kind       调用类型（如 "rpc"）。
      * @param target     目标标识。
      * @param method    消息名称。
-     * @param payload    请求负载，可为 null。
+     * @param params    请求参数，可为 null。
      * @param timeoutSec 超时时间（秒），0 表示不超时。
-     * @return 包含返回码、负载和错误信息的 CallResult。
+     * @return 包含返回码、参数和错误信息的 CallResult。
      */
     public static CallResult call(long taskId, String kind, String target, String method,
-                                   String payload, int timeoutSec) {
-        int payloadLen = utf8ByteLength(payload);
+                                   String params, int timeoutSec) {
+        int paramsLen = utf8ByteLength(params);
         PointerByReference outResult = new PointerByReference();
         IntByReference outLen = new IntByReference();
         PointerByReference outError = new PointerByReference();
 
-        int ret = lib.D1_Call(taskId, kind, target, method, payload,
-                payloadLen, timeoutSec, outResult, outLen, outError);
+        int ret = lib.D1_Call(taskId, kind, target, method, params,
+                paramsLen, timeoutSec, outResult, outLen, outError);
 
         String pl = ptrToStringAndFree(outResult.getValue(), outLen.getValue());
         String err = ptrToStringAndFree(outError.getValue(), 0);
@@ -524,27 +649,27 @@ public final class D1 {
      * @param taskId     任务 ID。
      * @param target     目标标识。
      * @param method    消息名称。
-     * @param payload    请求负载，可为 null。
+     * @param params    请求参数，可为 null。
      * @param timeoutSec 超时时间（秒）。
      * @param callback   响应回调，不能为 null。
      * @throws IllegalArgumentException callback 为 null 时抛出。
      * @throws D1Exception 请求发送失败时抛出。
      */
     public static void request(long taskId, String target, String method,
-                                String payload, int timeoutSec, ResponseCallback callback) {
+                                String params, int timeoutSec, ResponseCallback callback) {
         if (callback == null) {
             throw new IllegalArgumentException("callback 不能为 null");
         }
 
-        int payloadLen = utf8ByteLength(payload);
+        int paramsLen = utf8ByteLength(params);
 
         // 创建原生回调（由 JNA 管理其生命周期）
-        NativeOnResponse cb = (tId, pl, plLen, err) -> {
-            callback.onResponse(tId, pl, err);
+        NativeOnResponse cb = (tId, p, pLen, err) -> {
+            callback.onResponse(tId, p, err);
         };
 
-        int ret = lib.D1_Request(taskId, target, method, payload,
-                payloadLen, timeoutSec, cb);
+        int ret = lib.D1_Request(taskId, target, method, params,
+                paramsLen, timeoutSec, cb);
         throwIfError(ret, "Request");
     }
 
@@ -552,12 +677,12 @@ public final class D1 {
      * 在当前请求处理上下文中回复消息。
      * @param taskId  任务 ID。
      * @param method 消息名称。
-     * @param payload 回复负载，可为 null。
+     * @param params 回复参数，可为 null。
      * @throws D1Exception 回复失败时抛出。
      */
-    public static void reply(long taskId, String method, String payload) {
-        int len = utf8ByteLength(payload);
-        int ret = lib.D1_Reply(taskId, method, payload, len);
+    public static void reply(long taskId, String method, String params) {
+        int len = utf8ByteLength(params);
+        int ret = lib.D1_Reply(taskId, method, params, len);
         throwIfError(ret, "Reply");
     }
 
@@ -565,16 +690,15 @@ public final class D1 {
      * 从 D1 内置缓存中获取键对应的值。
      * @param taskId 任务 ID。
      * @param key    缓存键。
-     * @return 缓存值，若不存在返回 null。
+     * @return 缓存值，若键不存在返回 null。
+     * @throws D1Exception 获取失败（非键不存在的情况）时抛出。
      */
     public static String cacheGet(long taskId, String key) {
         PointerByReference result = new PointerByReference();
         IntByReference resultLen = new IntByReference();
 
         int ret = lib.D1_CacheGet(taskId, key, result, resultLen);
-        if (ret != 0) {
-            return null;
-        }
+        throwIfError(ret, "CacheGet");
 
         return ptrToStringAndFree(result.getValue(), resultLen.getValue());
     }
@@ -658,15 +782,14 @@ public final class D1 {
      * @param taskId 任务 ID。
      * @param key    键。
      * @return 值字符串，若键不存在返回 null。
+     * @throws D1Exception 获取失败（非键不存在的情况）时抛出。
      */
     public static String get(long taskId, String key) {
         PointerByReference result = new PointerByReference();
         IntByReference resultLen = new IntByReference();
 
         int ret = lib.D1_Get(taskId, key, result, resultLen);
-        if (ret != 0) {
-            return null;
-        }
+        throwIfError(ret, "Get");
 
         return ptrToStringAndFree(result.getValue(), resultLen.getValue());
     }

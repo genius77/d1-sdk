@@ -4,12 +4,12 @@
  * 本示例演示 D1 C API 的完整用法：
  *   1. 获取版本号
  *   2. 初始化 D1 运行时
- *   3. 设置消息处理器（演示 API：Publish、Call、CacheSet/CacheGet、DBQuery）
+ *   3. 设置消息处理器（演示 API：Notify、Call、CacheSet/CacheGet、DBQuery）
  *   4. 启动 D1
  *   5. 阻塞等待退出（Ctrl+C）
  *
  * 编译时需要链接 libd1.so，详见 CMakeLists.txt。
- * D1 动态库依赖: >= v1.5.0
+ * D1 动态库依赖: >= v1.7.0
  */
 
 #include <stdint.h>
@@ -17,7 +17,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "../../../lang/c/d1.h"
+#include "d1.h"
 
 /* ─────────────────────────────────────────────────────────
  * 消息处理器 — 演示所有 D1 API 的调用方式
@@ -32,11 +32,11 @@ static int on_request(uint64_t task_id,
                       char** out_error) {
     printf("[处理器] task_id=%lu, method=%s\n", (unsigned long)task_id, method);
 
-    /* ── 1. Publish — 发送单向消息（无回复） ── */
+    /* ── 1. Notify — 发送单向消息（无回复） ── */
     const char* pub_data = "{\"temp\":25.5,\"unit\":\"celsius\"}";
-    int ret = D1_Publish(task_id, "mqtt_client", "sensor.data",
+    int ret = D1_Notify(task_id, "mqtt_client", "sensor.data",
                          pub_data, (int)strlen(pub_data));
-    printf("  D1_Publish → %d\n", ret);
+    printf("  D1_Notify → %d\n", ret);
 
     /* ── 2. CacheSet — 写入缓存 ── */
     const char* cache_val = "{\"name\":\"Alice\",\"role\":\"admin\"}";
@@ -56,26 +56,28 @@ static int on_request(uint64_t task_id,
     char* call_result = NULL;
     int call_len = 0;
     char* call_error = NULL;
+    const char* call_params = "{\"id\":123}";
     ret = D1_Call(task_id, "script", "api_handler", "get_user",
-                  "{\"id\":123}", 10, 5,
+                  call_params, (int)strlen(call_params), 5,
                   &call_result, &call_len, &call_error);
     if (ret == 0 && call_result) {
         printf("  D1_Call → %.*s\n", call_len, call_result);
-        D1_Free(call_result);
     } else if (call_error) {
         printf("  D1_Call error → %s\n", call_error);
-        D1_Free(call_error);
     }
+    if (call_result) D1_Free(call_result);
+    if (call_error) D1_Free(call_error);
 
     /* ── 5. DBQuery — 数据库查询 ── */
     char* db_result = NULL;
     int db_len = 0;
-    ret = D1_DBQuery(task_id, "SELECT * FROM users LIMIT 1", 30,
+    const char* sql = "SELECT * FROM users LIMIT 1";
+    ret = D1_DBQuery(task_id, sql, (int)strlen(sql),
                      &db_result, &db_len);
     if (ret == 0 && db_result) {
         printf("  D1_DBQuery → %.*s\n", db_len, db_result);
-        D1_Free(db_result);
     }
+    if (db_result) D1_Free(db_result);
 
     /* ── 6. 返回响应 ── */
     const char* reply = "{\"status\":\"ok\",\"msg\":\"hello from C handler\"}";
@@ -107,7 +109,7 @@ int main(int argc, char* argv[]) {
     printf("D1_Init OK\n");
 
     /* 3. 设置默认消息处理器 */
-    D1_SetOnRequest(on_request);
+    D1_SetOnCall(on_request);
     printf("Default handler registered\n");
 
     /* 4. 启动 D1 运行时 */

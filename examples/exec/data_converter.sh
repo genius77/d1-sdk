@@ -25,16 +25,16 @@ EOF
 fi
 
 # ─── 从 JSON-RPC 中提取 CSV 数据 ─────────────────────────────
-CSV_DATA=$(echo "$INPUT" | python3 -c '''
+CSV_DATA=$(printf '%s' "$INPUT" | python3 -c "
 import json, sys
 try:
     data = json.load(sys.stdin)
-    params = data.get("params", {})
-    csv = params.get("csv", "")
+    params = data.get('params', {})
+    csv = params.get('csv', '')
     print(csv)
-except Exception as e:
-    print("")
-''')
+except Exception:
+    print('')
+")
 
 if [ -z "$CSV_DATA" ]; then
     cat <<EOF
@@ -49,13 +49,14 @@ EOF
 fi
 
 # ─── 转换 CSV → JSON ──────────────────────────────────────
-python3 <<'EOF'
+# 通过环境变量传递 CSV 数据（heredoc 占用 stdin）
+export CSV_DATA
+python3 <<'PYEOF'
 import csv
 import json
-import sys
+import os
 
-# Read from stdin
-csv_data = sys.stdin.read()
+csv_data = os.environ.get("CSV_DATA", "")
 rows = []
 
 reader = csv.DictReader(csv_data.splitlines())
@@ -68,4 +69,4 @@ print(json.dumps({
         "data": rows
     }
 }, indent=2))
-EOF <<<"$CSV_DATA"
+PYEOF

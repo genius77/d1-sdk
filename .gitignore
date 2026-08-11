@@ -1,0 +1,11 @@
+# Build artifacts
+examples/host/c/01_hello_d1/build/
+examples/host/cpp/01_hello_d1/build/
+examples/host/python/01_hello_d1/__pycache__/
+lang/python/__pycache__/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo

@@ -1,6 +1,6 @@
 // Package d1 提供 D1 动态库的 Go SDK 封装
 //
-// D1 SDK Go 封装 | 对应 D1 动态库版本: >= v1.5.0
+// D1 SDK Go 封装 | 对应 D1 动态库版本: >= v1.7.0
 //
 // 使用前请将 libd1.so / libd1.dylib / d1.dll 及 d1.h 放入 deps/ 目录，
 // 或通过 CGO_CFLAGS / CGO_LDFLAGS 环境变量指定头文件与库文件路径。
@@ -11,11 +11,11 @@
 //
 //	d := d1.Default()
 //	if err := d.Init("config.json"); err != nil { ... }
-//	if err := d.Start(); err != nil { ... }
-//	d.SetOnRequest(func(taskID uint64, method string, params []byte) ([]byte, error) {
+//	d.SetOnCall(func(taskID uint64, method string, params []byte) ([]byte, error) {
 //	    // 处理消息
 //	    return []byte("ok"), nil
 //	})
+//	if err := d.Start(); err != nil { ... }
 //	d.WaitStop()
 package d1
 
@@ -28,11 +28,35 @@ package d1
 #include "d1.h"
 #include <stdlib.h>
 
-// --- 回调函数类型定义 ---
-// 默认消息处理回调（SetOnRequest）
-typedef int (*d1_handler_cb_t)(uint64_t, const char*, const char*, int, char**, int*, char**);
-// 异步请求回调（Request）
-typedef void (*d1_request_cb_t)(uint64_t, const char*, int, const char*);
+// --- extern 声明：引用 //export 导出的 Go 函数 ---
+// cgo 要求在 C 前导块中声明 extern 函数，才能在 C 辅助函数中引用它们。
+// 注意：参数类型必须与 Go 导出函数的 C 签名一致（*C.char → char*，非 const char*）。
+extern int  goDefaultHandler(uint64_t, char*, char*, int, char**, int*, char**);
+extern void goRequestCallback(uint64_t, char*, int, char*);
+extern int  goOnInit(uint64_t);
+extern int  goOnStart(uint64_t);
+extern int  goOnStop(uint64_t);
+
+// --- C 辅助函数：将 Go 导出函数注册为 D1 回调 ---
+// 通过 extern 声明直接引用 Go 导出函数，在 C 侧完成到 D1 回调类型的强转。
+// 避免 cgo 中 unsafe.Pointer → C 函数指针的类型转换问题。
+static void d1_set_on_call_cb(void) {
+    D1_SetOnCall((D1_CallFunc)goDefaultHandler);
+}
+static void d1_set_on_init_cb(void) {
+    D1_SetOnInit((D1_LifecycleFunc)goOnInit);
+}
+static void d1_set_on_start_cb(void) {
+    D1_SetOnStart((D1_LifecycleFunc)goOnStart);
+}
+static void d1_set_on_stop_cb(void) {
+    D1_SetOnStop((D1_LifecycleFunc)goOnStop);
+}
+static int d1_request_with_cb(uint64_t task_id, const char* target,
+    const char* method, const char* params, int params_len, int timeout_sec) {
+    return D1_Request(task_id, target, method, params, params_len,
+                      timeout_sec, (D1_OnResponse)goRequestCallback);
+}
 */
 import "C"
 import (
@@ -66,6 +90,14 @@ type HandlerFunc func(taskID uint64, method string, params []byte) ([]byte, erro
 //   - err:     错误信息（成功时为 nil）
 type RequestCallback func(taskID uint64, params []byte, err error)
 
+// LifecycleFunc 生命周期回调函数签名（Init/Start/Stop 阶段）。
+//
+//   - taskID: 任务标识
+//
+// 返回值:
+//   - error: 处理过程中出现的错误（非 nil 时视为失败）
+type LifecycleFunc func(taskID uint64) error
+
 // ---------------------------------------------------------------------------
 // 内部状态管理
 // ---------------------------------------------------------------------------
@@ -86,6 +118,13 @@ var _instance = &D1{}
 
 // 供 C 回调使用的 Go 函数指针（全局，有且仅有一个处理器）
 var _defaultHandler HandlerFunc
+
+// 生命周期回调处理器（全局，每个阶段最多一个）
+var (
+	_onInitHandler  LifecycleFunc
+	_onStartHandler LifecycleFunc
+	_onStopHandler  LifecycleFunc
+)
 
 // Request 回调注册表 — 以 taskID 为键
 var (
@@ -114,7 +153,7 @@ func goDefaultHandler(
 ) C.int {
 	handler := _defaultHandler
 	if handler == nil {
-		errStr := C.CString("no default handler set (SetOnRequest)")
+		errStr := C.CString("no default handler set (SetOnCall)")
 		*outError = errStr
 		return -1
 	}
@@ -171,8 +210,44 @@ func goRequestCallback(
 	cb(id, goPayload, goErr)
 }
 
+//export goOnInit
+func goOnInit(taskID C.uint64_t) C.int {
+	handler := _onInitHandler
+	if handler == nil {
+		return 0
+	}
+	if err := handler(uint64(taskID)); err != nil {
+		return -1
+	}
+	return 0
+}
+
+//export goOnStart
+func goOnStart(taskID C.uint64_t) C.int {
+	handler := _onStartHandler
+	if handler == nil {
+		return 0
+	}
+	if err := handler(uint64(taskID)); err != nil {
+		return -1
+	}
+	return 0
+}
+
+//export goOnStop
+func goOnStop(taskID C.uint64_t) C.int {
+	handler := _onStopHandler
+	if handler == nil {
+		return 0
+	}
+	if err := handler(uint64(taskID)); err != nil {
+		return -1
+	}
+	return 0
+}
+
 // ---------------------------------------------------------------------------
-// D1 方法 — 封装全部 17 个 C API
+// D1 方法 — 封装全部 22 个 C API
 // ---------------------------------------------------------------------------
 
 // Version 获取 D1 动态库的版本号字符串。
@@ -279,25 +354,99 @@ func (d *D1) WaitStop() int {
 	return int(C.D1_WaitStop())
 }
 
-// SetOnRequest 设置默认消息处理器。
+// SetOnCall 设置默认消息处理器。
 //
 // 当 D1 收到未匹配到特定路由的消息时，将调用此处理器。
 // 只需设置一次，通常在 Start 之前调用。
 //
 // 示例:
 //
-//	d1.Default().SetOnRequest(func(taskID uint64, method string, params []byte) ([]byte, error) {
+//	d1.Default().SetOnCall(func(taskID uint64, method string, params []byte) ([]byte, error) {
 //	    log.Printf("收到消息: %s", method)
 //	    return []byte("ack"), nil
 //	})
-func (d *D1) SetOnRequest(handler HandlerFunc) {
+func (d *D1) SetOnCall(handler HandlerFunc) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.handler = handler
 	_defaultHandler = handler
+
+	// 向 C 运行时注册默认处理器（goDefaultHandler 桥接到 _defaultHandler）
+	C.d1_set_on_call_cb()
 }
 
-// Publish 发布消息到指定目标（单向，不等待响应）。
+// HandleRequest 将外部请求转入 D1 管道处理。
+//
+//   - method: 消息方法名
+//   - params: 消息载荷
+//
+// 示例:
+//
+//	d1.Default().HandleRequest("external.event", `{"k":"v"}`)
+func (d *D1) HandleRequest(method, params string) {
+	cMethod := C.CString(method)
+	defer C.free(unsafe.Pointer(cMethod))
+	cParams := C.CString(params)
+	defer C.free(unsafe.Pointer(cParams))
+
+	C.D1_HandleRequest(cMethod, cParams, C.int(len(params)))
+}
+
+// SetOnInit 注册 Init 阶段回调（组件初始化完成后调用）。
+//
+// 通常在 Start 之前调用。
+//
+// 示例:
+//
+//	d1.Default().SetOnInit(func(taskID uint64) error {
+//	    log.Println("Init 阶段回调")
+//	    return nil
+//	})
+func (d *D1) SetOnInit(handler LifecycleFunc) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	_onInitHandler = handler
+
+	C.d1_set_on_init_cb()
+}
+
+// SetOnStart 注册 Start 阶段回调（连接启动前调用）。
+//
+// 通常在 Start 之前调用。
+//
+// 示例:
+//
+//	d1.Default().SetOnStart(func(taskID uint64) error {
+//	    log.Println("Start 阶段回调")
+//	    return nil
+//	})
+func (d *D1) SetOnStart(handler LifecycleFunc) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	_onStartHandler = handler
+
+	C.d1_set_on_start_cb()
+}
+
+// SetOnStop 注册 Stop 阶段回调（连接断开后调用）。
+//
+// 通常在 Start 之前调用。
+//
+// 示例:
+//
+//	d1.Default().SetOnStop(func(taskID uint64) error {
+//	    log.Println("Stop 阶段回调")
+//	    return nil
+//	})
+func (d *D1) SetOnStop(handler LifecycleFunc) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	_onStopHandler = handler
+
+	C.d1_set_on_stop_cb()
+}
+
+// Notify 发送单向消息到指定目标（无回复，不等待响应）。
 //
 //   - taskID:  任务标识，用于追踪
 //   - target:  目标地址
@@ -306,8 +455,8 @@ func (d *D1) SetOnRequest(handler HandlerFunc) {
 
 // 示例:
 //
-//	err := d1.Default().Publish(1, "node/node1", "event.hello", `{"msg":"hi"}`)
-func (d *D1) Publish(taskID uint64, target, method, params string) error {
+//	err := d1.Default().Notify(1, "node/node1", "event.hello", `{"msg":"hi"}`)
+func (d *D1) Notify(taskID uint64, target, method, params string) error {
 	cTarget := C.CString(target)
 	defer C.free(unsafe.Pointer(cTarget))
 	cMethod := C.CString(method)
@@ -315,9 +464,9 @@ func (d *D1) Publish(taskID uint64, target, method, params string) error {
 	cParams := C.CString(params)
 	defer C.free(unsafe.Pointer(cParams))
 
-	ret := C.D1_Publish(C.uint64_t(taskID), cTarget, cMethod, cParams, C.int(len(params)))
+	ret := C.D1_Notify(C.uint64_t(taskID), cTarget, cMethod, cParams, C.int(len(params)))
 	if ret != 0 {
-		return fmt.Errorf("D1_Publish failed, error code: %d", int(ret))
+		return fmt.Errorf("D1_Notify failed, error code: %d", int(ret))
 	}
 	return nil
 }
@@ -325,7 +474,7 @@ func (d *D1) Publish(taskID uint64, target, method, params string) error {
 // Call 同步调用远程目标并等待响应。
 //
 //   - taskID:     任务标识
-//   - kind:       调用类型（由 D1 协议定义）
+//   - kind:       调用类型（字符串，如 "default"/"conn"/"script"/"service"/"exec"）
 //   - target:     目标地址
 //   - method:     消息名称
 //   - params:     方法参数
@@ -337,8 +486,10 @@ func (d *D1) Publish(taskID uint64, target, method, params string) error {
 //
 // 示例:
 //
-//	resp, err := d1.Default().Call(1, 0, "node/node1", "rpc.query", `{"sql":"SELECT 1"}`, 10)
-func (d *D1) Call(taskID uint64, kind int, target, method, params string, timeoutSec int) (string, error) {
+//	resp, err := d1.Default().Call(1, "script", "node/node1", "rpc.query", `{"sql":"SELECT 1"}`, 10)
+func (d *D1) Call(taskID uint64, kind string, target, method, params string, timeoutSec int) (string, error) {
+	cKind := C.CString(kind)
+	defer C.free(unsafe.Pointer(cKind))
 	cTarget := C.CString(target)
 	defer C.free(unsafe.Pointer(cTarget))
 	cMethod := C.CString(method)
@@ -352,7 +503,7 @@ func (d *D1) Call(taskID uint64, kind int, target, method, params string, timeou
 
 	ret := C.D1_Call(
 		C.uint64_t(taskID),
-		C.int(kind),
+		cKind,
 		cTarget,
 		cMethod,
 		cParams,
@@ -421,14 +572,13 @@ func (d *D1) Request(taskID uint64, target, method, params string, timeoutSec in
 	cParams := C.CString(params)
 	defer C.free(unsafe.Pointer(cParams))
 
-	ret := C.D1_Request(
+	ret := C.d1_request_with_cb(
 		C.uint64_t(taskID),
 		cTarget,
 		cMethod,
 		cParams,
 		C.int(len(params)),
 		C.int(timeoutSec),
-		(*C.d1_request_cb_t)(unsafe.Pointer(C.goRequestCallback)),
 	)
 
 	if ret != 0 {

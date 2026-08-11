@@ -283,8 +283,8 @@
   <header class="page-header">
     <span class="badge">C API · 多语言绑定</span>
     <h1>D1 外部宿主 API 指南</h1>
-    <p class="subtitle">SDK-05 · v1.5.0</p>
-    <p class="meta">版本 v1.5.0 · 2026-06-25</p>
+    <p class="subtitle">SDK-05 · v1.7.0</p>
+    <p class="meta">版本 v1.7.0 · 2026-08-11 · 适用于 D1 ≥ v1.7.0</p>
   </header>
 
   <!-- ═══════════════ TOC ═══════════════ -->
@@ -439,14 +439,14 @@ int D1_WaitStop(void);</code></pre>
 
     <pre><code>// 设置默认消息处理器
 // handler: 处理函数指针，NULL=取消注册
-void D1_SetOnRequest(D1_OnRequestFunc handler);
+void D1_SetOnCall(D1_CallFunc handler);
 
-// 发布消息（单向，不等待响应）
+// 发送单向消息（不等待响应）
 // target: 目标地址
 // method: 消息名称
 // params: 消息参数（JSON 字节）
 // 返回: 0=成功，-1=失败，-2=无效 task
-int D1_Publish(uint64_t taskID, const char* target, const char* method,
+int D1_Notify(uint64_t taskID, const char* target, const char* method,
                const char* params, int paramsLen);
 
 // 同步调用（阻塞等待响应）
@@ -652,7 +652,7 @@ go build -buildmode=c-shared -o d1.dll ./cmd/d1/</code></pre>
   <section id="ch7">
     <h2>7. 完整示例</h2>
 
-    <p>以下展示各语言通过 <code>lang/</code> 目录下的 SDK 封装使用 D1 的完整方式。每种语言均演示生命周期（Init→Start→WaitStop）和全部 API（Publish、Call、CacheSet/CacheGet、DBQuery）。</p>
+    <p>以下展示各语言通过 <code>lang/</code> 目录下的 SDK 封装使用 D1 的完整方式。每种语言均演示生命周期（Init→Start→WaitStop）和全部 API（Notify、Call、CacheSet/CacheGet、DBQuery）。</p>
 
     <h3>7.1 C 语言</h3>
     <p>引入头文件 <code>lang/c/d1.h</code>，链接 <code>libd1.so</code>。</p>
@@ -668,8 +668,8 @@ static int on_request(uint64_t task_id, const char* method,
                       char** out_result, int* out_len, char** out_error) {
     printf("[Handler] task=%llu method=%s\n", task_id, method);
 
-    /* Publish — 发送单向消息 */
-    D1_Publish(task_id, "mqtt_client", "sensor.data",
+    /* Notify — 发送单向消息 */
+    D1_Notify(task_id, "mqtt_client", "sensor.data",
                "{\"temp\":25.5}", 13);
 
     /* CacheSet/CacheGet — 缓存读写 */
@@ -697,7 +697,7 @@ static int on_request(uint64_t task_id, const char* method,
 
 int main() {
     printf("D1 Version: %s\n", D1_Version());
-    D1_SetOnRequest(on_request);
+    D1_SetOnCall(on_request);
     D1_Init(NULL);
     D1_Start();
     D1_WaitStop();
@@ -713,13 +713,13 @@ int main() {
 int main() {
     std::cout &lt;&lt; "D1 Version: " &lt;&lt; D1::Version() &lt;&lt; std::endl;
 
-    D1::SetOnRequest(
+    D1::SetOnCall(
         [](uint64_t task_id, const char* method, const char* params,
            int params_len, char** out_result, int* out_len, char** out_error) -> int {
             std::cout &lt;&lt; "[Handler] task=" &lt;&lt; task_id &lt;&lt; std::endl;
 
-            /* Publish */
-            D1_Publish(task_id, "mqtt_client", "sensor.data",
+            /* Notify */
+            D1_Notify(task_id, "mqtt_client", "sensor.data",
                        "{\"temp\":25.5}", 13);
 
             /* CacheSet/CacheGet */
@@ -765,11 +765,11 @@ func main() {
     d := d1.Default()
     fmt.Println("D1 Version:", d.Version())
 
-    d.SetOnRequest(func(taskID uint64, method string, params []byte) ([]byte, error) {
+    d.SetOnCall(func(taskID uint64, method string, params []byte) ([]byte, error) {
         log.Printf("[Handler] task=%d method=%s", taskID, method)
 
-        /* Publish */
-        d.Publish(taskID, "mqtt_client", "sensor.data", `{"temp":25.5}`)
+        /* Notify */
+        d.Notify(taskID, "mqtt_client", "sensor.data", `{"temp":25.5}`)
 
         /* CacheSet/CacheGet */
         d.CacheSet(taskID, "user:42", `{"name":"Alice"}`, 3600)
@@ -777,7 +777,7 @@ func main() {
         fmt.Println("Cache:", val)
 
         /* Call */
-        resp, err := d.Call(taskID, 2, "api_handler", "get_user", `{"id":123}`, 5)
+        resp, err := d.Call(taskID, "script", "api_handler", "get_user", `{"id":123}`, 5)
         if err != nil { log.Printf("Call error: %v", err) }
         else { fmt.Println("Call:", resp) }
 
@@ -804,16 +804,16 @@ from d1 import D1
 def default_handler(task_id, method, params):
     print(f"[Handler] taskID={task_id} method={method}")
 
-    # Publish
-    d1.publish(task_id, "mqtt_client", "sensor.data", json.dumps({"temp": 25.5}))
+    # Notify
+    d1.notify(task_id, "mqtt_client", "sensor.data", json.dumps({"temp": 25.5}))
 
     # CacheSet/CacheGet
     d1.cache_set(task_id, "user:42", json.dumps({"name": "Alice"}), 3600)
     cached = d1.cache_get(task_id, "user:42")
     print("Cache:", cached.decode() if cached else "null")
 
-    # Call — kind: 0=conn, 1=default, 2=script, 3=service, 4=exec
-    result = d1.call(task_id, 2, "api_handler", "get_user", json.dumps({"id": 123}), 5)
+    # Call — kind: 调用类型字符串（如 "default"/"conn"/"script"/"service"/"exec"）
+    result = d1.call(task_id, "script", "api_handler", "get_user", json.dumps({"id": 123}), 5)
     if result["error"] is None:
         print("Call:", result["payload"].decode())
     else:
@@ -827,7 +827,7 @@ def default_handler(task_id, method, params):
 
 d1 = D1()
 print("D1 Version:", d1.version())
-d1.set_on_request(default_handler)
+d1.set_on_call(default_handler)
 d1.init(None)
 d1.start()
 d1.wait_stop()</code></pre>
@@ -845,8 +845,8 @@ class Program
     {
         Console.WriteLine($"[Handler] taskID={taskId} method={method}");
 
-        /* Publish */
-        D1.Publish(taskId, "mqtt_client", "sensor.data",
+        /* Notify */
+        D1.Notify(taskId, "mqtt_client", "sensor.data",
                    JsonSerializer.Serialize(new { temp = 25.5 }));
 
         /* CacheSet/CacheGet */
@@ -872,7 +872,7 @@ class Program
     static void Main()
     {
         Console.WriteLine($"D1 Version: {D1.Version()}");
-        D1.SetOnRequest(DefaultHandler);
+        D1.SetOnCall(DefaultHandler);
         D1.Init(null);
         D1.Start();
         D1.WaitStop();
@@ -891,8 +891,8 @@ public class HelloD1 {
         public Object[] handle(long taskId, String method, String payload) {
             System.out.println("[Handler] taskID=" + taskId + " method=" + method);
 
-            /* Publish */
-            D1.publish(taskId, "mqtt_client", "sensor.data",
+            /* Notify */
+            D1.notify(taskId, "mqtt_client", "sensor.data",
                        "{\"temp\":25.5}");
 
             /* CacheSet/CacheGet */
@@ -916,7 +916,7 @@ public class HelloD1 {
 
     public static void main(String[] args) {
         System.out.println("D1 Version: " + D1.version());
-        D1.setOnRequest(new DefaultHandler());
+        D1.setOnCall(new DefaultHandler());
         D1.init(null);
         D1.start();
         D1.waitStop();
@@ -926,7 +926,7 @@ public class HelloD1 {
 
   <!-- ═══════════════ FOOTER ═══════════════ -->
   <footer>
-    <p>&copy; D1 Project · SDK-05 外部宿主 API 指南 · v1.5.0 · 2026-06-25</p>
+    <p>&copy; D1 Project · SDK-05 外部宿主 API 指南 · v1.7.0 · 2026-08-11</p>
   </footer>
 
 </article>

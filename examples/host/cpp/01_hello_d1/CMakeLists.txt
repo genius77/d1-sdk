@@ -14,13 +14,13 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 # ── D1 动态库路径配置 ──
-# 从示例目录向上三级到达仓库根目录，然后进入 deps/
-set(D1_DEPS_DIR "${CMAKE_SOURCE_DIR}/../../../deps")
+# 从示例目录向上四级到达仓库根目录，然后进入 deps/
+set(D1_DEPS_DIR "${CMAKE_SOURCE_DIR}/../../../../deps")
 
 # 头文件搜索路径（优先 deps，其次 SDK）
 include_directories("${D1_DEPS_DIR}")
-include_directories("${CMAKE_SOURCE_DIR}/../../../lang/cpp")
-include_directories("${CMAKE_SOURCE_DIR}/../../../lang/c")
+include_directories("${CMAKE_SOURCE_DIR}/../../../../lang/cpp")
+include_directories("${CMAKE_SOURCE_DIR}/../../../../lang/c")
 
 # 链接目录
 link_directories("${D1_DEPS_DIR}")

@@ -11,7 +11,7 @@
 #
 # enabled 是数据通路开关（非生命周期开关）：
 #   - true  = 正常收发数据，数据回调给上层
-#   - false = 连接保持，但不回调数据给上层，上层 Publish 到此实例也被拒绝
+#   - false = 连接保持，但不回调数据给上层，上层 Notify 到此实例也被拒绝
 #   运行时通过 SetConnEnabled(name, true/false) 动态切换，无需重连
 #
 # 运行时管理（通过 Admin API）：

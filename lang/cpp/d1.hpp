@@ -1,5 +1,5 @@
 /*
- * D1 SDK C++ 封装 | 对应 D1 动态库版本: ≥ v1.5.0
+ * D1 SDK C++ 封装 | 对应 D1 动态库版本: ≥ v1.7.0
  *
  * 本文件对 D1 C API 进行了现代 C++ RAII 封装，提供 PascalCase 风格的方法调用。
  * 所有方法均为静态方法，通过 D1 类直接调用，无需实例化。
@@ -33,17 +33,26 @@ int         D1_Start(void);
 int         D1_Stop(void);
 int         D1_WaitStop(void);
 
-typedef int (*D1_OnRequestFunc)(uint64_t task_id, const char* method,
-                                const char* params, int params_len,
-                                char** out_result, int* out_len,
-                                char** out_error);
-void D1_SetOnRequest(D1_OnRequestFunc handler);
+typedef int (*D1_CallFunc)(uint64_t task_id, const char* method,
+                           const char* params, int params_len,
+                           char** out_result, int* out_len,
+                           char** out_error);
+void D1_SetOnCall(D1_CallFunc handler);
 
 typedef void (*D1_OnResponse)(uint64_t task_id, const char* params,
                               int params_len, const char* error);
 
-int D1_Publish(uint64_t task_id, const char* target, const char* method,
-               const char* params, int params_len);
+// 生命周期回调（Init/Start/Stop 阶段）
+typedef int (*D1_LifecycleFunc)(uint64_t task_id);
+void D1_SetOnInit(D1_LifecycleFunc handler);
+void D1_SetOnStart(D1_LifecycleFunc handler);
+void D1_SetOnStop(D1_LifecycleFunc handler);
+
+// 将外部请求转入 D1 管道处理
+void D1_HandleRequest(const char* method, const char* params, int params_len);
+
+int D1_Notify(uint64_t task_id, const char* target, const char* method,
+              const char* params, int params_len);
 int D1_Call(uint64_t task_id, const char* kind, const char* target,
             const char* method, const char* params, int params_len,
             int timeout_sec, char** out_result, int* out_len,
@@ -145,17 +154,17 @@ public:
     static int WaitStop() { return D1_WaitStop(); }
 
     /**
-     * SetOnRequest - 设置默认消息请求处理器。
+     * SetOnCall - 设置默认消息请求处理器。
      *
      * 参数:
      *   handler: 处理回调函数。使用 std::function 包装，支持 lambda。
      */
-    static void SetOnRequest(
+    static void SetOnCall(
         std::function<int(uint64_t, const char*, const char*, int,
                           char**, int*, char**)> handler)
     {
         if (!handler) {
-            D1_SetOnRequest(nullptr);
+            D1_SetOnCall(nullptr);
             return;
         }
 
@@ -166,7 +175,7 @@ public:
 
         s_handler = std::move(handler);
 
-        D1_SetOnRequest([](uint64_t task_id, const char* method,
+        D1_SetOnCall([](uint64_t task_id, const char* method,
                                 const char* params, int params_len,
                                 char** out_params, int* out_len,
                                 char** out_error) -> int {
@@ -176,6 +185,77 @@ public:
             }
             return -1;
         });
+    }
+
+    /**
+     * SetOnInit - 注册 Init 阶段回调（组件初始化完成后调用）。
+     *
+     * 参数:
+     *   handler: 生命周期回调，签名为 int(uint64_t task_id)，返回 0 表示成功。
+     */
+    static void SetOnInit(std::function<int(uint64_t)> handler) {
+        if (!handler) {
+            D1_SetOnInit(nullptr);
+            return;
+        }
+        static std::function<int(uint64_t)> s_cb;
+        s_cb = std::move(handler);
+        D1_SetOnInit([](uint64_t task_id) -> int {
+            if (s_cb) return s_cb(task_id);
+            return 0;
+        });
+    }
+
+    /**
+     * SetOnStart - 注册 Start 阶段回调（连接启动前调用）。
+     *
+     * 参数:
+     *   handler: 生命周期回调，签名为 int(uint64_t task_id)，返回 0 表示成功。
+     */
+    static void SetOnStart(std::function<int(uint64_t)> handler) {
+        if (!handler) {
+            D1_SetOnStart(nullptr);
+            return;
+        }
+        static std::function<int(uint64_t)> s_cb;
+        s_cb = std::move(handler);
+        D1_SetOnStart([](uint64_t task_id) -> int {
+            if (s_cb) return s_cb(task_id);
+            return 0;
+        });
+    }
+
+    /**
+     * SetOnStop - 注册 Stop 阶段回调（连接断开后调用）。
+     *
+     * 参数:
+     *   handler: 生命周期回调，签名为 int(uint64_t task_id)，返回 0 表示成功。
+     */
+    static void SetOnStop(std::function<int(uint64_t)> handler) {
+        if (!handler) {
+            D1_SetOnStop(nullptr);
+            return;
+        }
+        static std::function<int(uint64_t)> s_cb;
+        s_cb = std::move(handler);
+        D1_SetOnStop([](uint64_t task_id) -> int {
+            if (s_cb) return s_cb(task_id);
+            return 0;
+        });
+    }
+
+    /**
+     * HandleRequest - 将外部请求转入 D1 管道处理。
+     *
+     * 参数:
+     *   method: 消息方法名。
+     *   params: 消息载荷。
+     */
+    static void HandleRequest(const std::string& method,
+                              const std::string& params)
+    {
+        D1_HandleRequest(method.c_str(), params.data(),
+                         static_cast<int>(params.size()));
     }
 
     /** Free - 释放由 D1 API 分配的内存。 */
@@ -190,14 +270,21 @@ public:
      *
      * 自动管理 D1 API 返回的动态分配内存。
      * 支持移动语义，禁止拷贝。
+     * 对于非 D1 分配的内存（如合成的错误消息），可设置 owns=false
+     * 以避免在析构时调用 D1_Free。
      */
     struct Buffer {
         char* data   = nullptr;
         int   length = 0;
+        bool  owns   = true;  // 是否拥有内存（true=析构时调用 D1_Free，false=不释放）
 
         Buffer() = default;
 
-        Buffer(char* d, int len) : data(d), length(len) {}
+        /** 构造一个 D1 管理的 Buffer（owns=true，析构时调用 D1_Free）。 */
+        Buffer(char* d, int len) : data(d), length(len), owns(true) {}
+
+        /** 构造一个 Buffer，可指定是否由 D1 分配。 */
+        Buffer(char* d, int len, bool own) : data(d), length(len), owns(own) {}
 
         ~Buffer() { reset(); }
 
@@ -207,10 +294,11 @@ public:
 
         // 移动构造
         Buffer(Buffer&& other) noexcept
-            : data(other.data), length(other.length)
+            : data(other.data), length(other.length), owns(other.owns)
         {
             other.data   = nullptr;
             other.length = 0;
+            other.owns   = true;
         }
 
         // 移动赋值
@@ -219,8 +307,10 @@ public:
                 reset();
                 data         = other.data;
                 length       = other.length;
+                owns         = other.owns;
                 other.data   = nullptr;
                 other.length = 0;
+                other.owns   = true;
             }
             return *this;
         }
@@ -239,11 +329,12 @@ public:
 
         /** 显式释放内部资源。 */
         void reset() {
-            if (data) {
+            if (data && owns) {
                 D1_Free(data);
-                data   = nullptr;
-                length = 0;
             }
+            data   = nullptr;
+            length = 0;
+            owns   = true;
         }
 
         /** 释放所有权（调用者需手动管理内存）。 */
@@ -252,6 +343,7 @@ public:
             char* p  = data;
             data     = nullptr;
             length   = 0;
+            owns     = true;
             return p;
         }
     };
@@ -260,11 +352,12 @@ public:
      * CallResult —— D1::Call 的返回结果结构体。
      */
     struct CallResult {
-        Buffer payload;   // 响应载荷
-        Buffer error;     // 错误信息（成功时为空）
+        int     returnCode = 0;   // C API 返回码，0 = 成功
+        Buffer  payload;          // 响应载荷
+        Buffer  error;           // 错误信息（成功时为空）
 
-        /** 调用是否成功。 */
-        bool ok() const { return error.empty(); }
+        /** 调用是否成功（返回码为 0 且无错误）。 */
+        bool ok() const { return returnCode == 0 && error.empty(); }
 
         /** 获取载荷字符串。 */
         std::string payloadString() const { return payload.toString(); }
@@ -284,12 +377,32 @@ public:
         bool ok() const { return return_code == 0; }
     };
 
+    /**
+     * GetResult —— D1::CacheGet / DBQuery / Get 的返回结果结构体。
+     *
+     * 包含 C API 返回码和数据 Buffer，允许调用者区分
+     * "键不存在"（return_code == 0, data 为空）和 "操作失败"（return_code != 0）。
+     */
+    struct GetResult {
+        int     return_code = 0;  // C API 返回码，0 = 成功
+        Buffer  data;              // 返回数据
+
+        /** 调用是否成功。 */
+        bool ok() const { return return_code == 0; }
+
+        /** 数据是否为空。 */
+        bool empty() const { return data.empty(); }
+
+        /** 获取数据字符串。 */
+        std::string toString() const { return data.toString(); }
+    };
+
     /* ======================================================================
      * ── 消息发布与调用 ──
      * ====================================================================== */
 
     /**
-     * Publish - 发布（广播）一条消息。
+     * Notify - 发送单向消息（无回复，不等待响应）。
      *
      * 参数:
      *   task_id:  任务 ID。
@@ -299,12 +412,12 @@ public:
      *
      * 返回: 0 表示成功，非 0 表示失败。
      */
-    static int Publish(uint64_t task_id, const std::string& target,
-                       const std::string& method,
-                       const std::string& params)
+    static int Notify(uint64_t task_id, const std::string& target,
+                      const std::string& method,
+                      const std::string& params)
     {
-        return D1_Publish(task_id, target.c_str(), method.c_str(),
-                          params.data(), static_cast<int>(params.size()));
+        return D1_Notify(task_id, target.c_str(), method.c_str(),
+                         params.data(), static_cast<int>(params.size()));
     }
 
     /**
@@ -335,22 +448,29 @@ public:
                          params.data(), static_cast<int>(params.size()),
                          timeout_sec, &out_result, &out_len, &out_error);
 
+        CallResult result;
+        result.returnCode = rc;
+
         if (rc != 0 && !out_error) {
             // API 返回错误但没有设置 out_error，合成一个
-            CallResult result;
-            result.error = Buffer(
-                strdup(("D1_Call failed, error code: " + std::to_string(rc))
-                           .c_str()),
-                -1); // strdup memory must be freed by D1_Free; consider custom allocator for production
+            // 使用 malloc 分配并标记 owns=false，避免 D1_Free 释放非 D1 内存
+            std::string err_msg = "D1_Call failed, error code: "
+                                   + std::to_string(rc);
+            char* buf = static_cast<char*>(std::malloc(err_msg.size()));
+            if (buf) {
+                std::memcpy(buf, err_msg.data(), err_msg.size());
+                result.error = Buffer(buf, static_cast<int>(err_msg.size()),
+                                      false);
+            }
             return result;
         }
 
-        CallResult result;
         if (out_result) {
             result.payload = Buffer(out_result, out_len);
         }
         if (out_error) {
-            result.error = Buffer(out_error, static_cast<int>(strlen(out_error)));
+            result.error = Buffer(out_error,
+                                  static_cast<int>(strlen(out_error)));
         }
         return result;
     }
@@ -425,13 +545,17 @@ public:
      *   task_id: 任务 ID。
      *   key:     缓存键名。
      *
-     * 返回: Buffer 对象，包含缓存值和长度。
+     * 返回: GetResult，包含返回码和数据。
+     *       ok() 为 false 表示操作失败，data.empty() 为 true 表示键不存在。
      */
-    static Buffer CacheGet(uint64_t task_id, const std::string& key) {
+    static GetResult CacheGet(uint64_t task_id, const std::string& key) {
         char* result      = nullptr;
         int   result_len  = 0;
-        D1_CacheGet(task_id, key.c_str(), &result, &result_len);
-        return Buffer(result, result_len);
+        int rc = D1_CacheGet(task_id, key.c_str(), &result, &result_len);
+        GetResult gr;
+        gr.return_code = rc;
+        gr.data = Buffer(result, result_len);
+        return gr;
     }
 
     /**
@@ -476,14 +600,17 @@ public:
      *   task_id: 任务 ID。
      *   query:   SQL 查询语句。
      *
-     * 返回: Buffer 对象，包含 JSON 格式结果集。
+     * 返回: GetResult，包含返回码和 JSON 格式结果集。
      */
-    static Buffer DBQuery(uint64_t task_id, const std::string& query) {
+    static GetResult DBQuery(uint64_t task_id, const std::string& query) {
         char* result     = nullptr;
         int   result_len = 0;
-        D1_DBQuery(task_id, query.c_str(), static_cast<int>(query.size()),
-                   &result, &result_len);
-        return Buffer(result, result_len);
+        int rc = D1_DBQuery(task_id, query.c_str(), static_cast<int>(query.size()),
+                           &result, &result_len);
+        GetResult gr;
+        gr.return_code = rc;
+        gr.data = Buffer(result, result_len);
+        return gr;
     }
 
     /**
@@ -530,13 +657,17 @@ public:
      *   task_id: 任务 ID。
      *   key:     键名。
      *
-     * 返回: Buffer 对象，包含键值和长度。
+     * 返回: GetResult，包含返回码和键值数据。
+     *       ok() 为 false 表示操作失败，data.empty() 为 true 表示键不存在。
      */
-    static Buffer Get(uint64_t task_id, const std::string& key) {
+    static GetResult Get(uint64_t task_id, const std::string& key) {
         char* result     = nullptr;
         int   result_len = 0;
-        D1_Get(task_id, key.c_str(), &result, &result_len);
-        return Buffer(result, result_len);
+        int rc = D1_Get(task_id, key.c_str(), &result, &result_len);
+        GetResult gr;
+        gr.return_code = rc;
+        gr.data = Buffer(result, result_len);
+        return gr;
     }
 
 private:

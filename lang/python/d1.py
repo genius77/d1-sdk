@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-D1 SDK Python 封装 | 对应 D1 动态库版本: >= v1.5.0
+D1 SDK Python 封装 | 对应 D1 动态库版本: >= v1.7.0
 
-本模块通过 ctypes 封装 D1 动态库的全部 17 个 C API，
+本模块通过 ctypes 封装 D1 动态库的全部 C API，
 提供 Pythonic 的调用方式。
 
 使用前请将动态库及头文件放入 deps/ 目录:
@@ -29,6 +29,7 @@ import ctypes
 import os
 import platform
 import sys
+from collections import namedtuple
 from ctypes import (
     CFUNCTYPE,
     POINTER,
@@ -80,6 +81,20 @@ except OSError as e:
     ) from e
 
 # ---------------------------------------------------------------------------
+# C 运行时 malloc 引用（用于回调内存分配）
+# 回调中返回的内存由 D1 通过 D1_Free (= free) 释放，必须使用 malloc 分配。
+# ctypes.create_string_buffer 会在 Python GC 时自动释放内存，导致 double-free。
+# ---------------------------------------------------------------------------
+if _SYSTEM == "Windows":
+    _c_lib = ctypes.CDLL("ucrtbase.dll")
+else:
+    _c_lib = ctypes.CDLL(None)
+
+_c_malloc = _c_lib.malloc
+_c_malloc.restype = c_void_p
+_c_malloc.argtypes = [ctypes.c_size_t]
+
+# ---------------------------------------------------------------------------
 # 回调函数类型定义
 # ---------------------------------------------------------------------------
 
@@ -108,8 +123,15 @@ D1_REQUEST_CB = CFUNCTYPE(
     c_char_p,                      # error
 )
 
+# D1 生命周期回调类型（Init/Start/Stop 阶段）
+# int (*)(uint64_t task_id)
+D1_LIFECYCLE_CB = CFUNCTYPE(
+    c_int,                         # 返回值
+    c_uint64,                      # task_id
+)
+
 # ---------------------------------------------------------------------------
-# 为所有 17 个 C API 设置 argtypes / restype
+# 为所有 C API 设置 argtypes / restype
 # ---------------------------------------------------------------------------
 
 # 1. D1_Version() -> const char*
@@ -131,23 +153,39 @@ _lib.D1_Stop.restype = c_int
 _lib.D1_WaitStop.argtypes = []
 _lib.D1_WaitStop.restype = c_int
 
-# 6. D1_SetOnRequest(handler) -> void
-_lib.D1_SetOnRequest.argtypes = [D1_HANDLER_CB]
-_lib.D1_SetOnRequest.restype = None
+# 6. D1_SetOnCall(handler) -> void
+_lib.D1_SetOnCall.argtypes = [D1_HANDLER_CB]
+_lib.D1_SetOnCall.restype = None
 
-# 7. D1_Publish(task_id, target, method, params, payload_len) -> int
-_lib.D1_Publish.argtypes = [c_uint64, c_char_p, c_char_p, c_char_p, c_int]
-_lib.D1_Publish.restype = c_int
+# 7. D1_SetOnInit(handler) -> void
+_lib.D1_SetOnInit.argtypes = [D1_LIFECYCLE_CB]
+_lib.D1_SetOnInit.restype = None
 
-# 8. D1_Call(task_id, kind, target, method, params, payload_len,
-#            timeout_sec, out_result, out_len, out_error) -> int
+# 8. D1_SetOnStart(handler) -> void
+_lib.D1_SetOnStart.argtypes = [D1_LIFECYCLE_CB]
+_lib.D1_SetOnStart.restype = None
+
+# 9. D1_SetOnStop(handler) -> void
+_lib.D1_SetOnStop.argtypes = [D1_LIFECYCLE_CB]
+_lib.D1_SetOnStop.restype = None
+
+# 10. D1_HandleRequest(method, params, params_len) -> void
+_lib.D1_HandleRequest.argtypes = [c_char_p, c_char_p, c_int]
+_lib.D1_HandleRequest.restype = None
+
+# 11. D1_Notify(task_id, target, method, params, payload_len) -> int
+_lib.D1_Notify.argtypes = [c_uint64, c_char_p, c_char_p, c_char_p, c_int]
+_lib.D1_Notify.restype = c_int
+
+# 12. D1_Call(task_id, kind, target, method, params, payload_len,
+#             timeout_sec, out_result, out_len, out_error) -> int
 _lib.D1_Call.argtypes = [
-    c_uint64, c_int, c_char_p, c_char_p, c_char_p,
+    c_uint64, c_char_p, c_char_p, c_char_p, c_char_p,
     c_int, c_int, POINTER(c_char_p), POINTER(c_int), POINTER(c_char_p),
 ]
 _lib.D1_Call.restype = c_int
 
-# 9. D1_Request(task_id, target, method, params, payload_len,
+# 13. D1_Request(task_id, target, method, params, payload_len,
 #               timeout_sec, callback) -> int
 _lib.D1_Request.argtypes = [
     c_uint64, c_char_p, c_char_p, c_char_p,
@@ -155,35 +193,35 @@ _lib.D1_Request.argtypes = [
 ]
 _lib.D1_Request.restype = c_int
 
-# 10. D1_Reply(task_id, method, params, payload_len) -> int
+# 14. D1_Reply(task_id, method, params, payload_len) -> int
 _lib.D1_Reply.argtypes = [c_uint64, c_char_p, c_char_p, c_int]
 _lib.D1_Reply.restype = c_int
 
-# 11. D1_CacheGet(task_id, key, result, result_len) -> int
+# 15. D1_CacheGet(task_id, key, result, result_len) -> int
 _lib.D1_CacheGet.argtypes = [c_uint64, c_char_p, POINTER(c_char_p), POINTER(c_int)]
 _lib.D1_CacheGet.restype = c_int
 
-# 12. D1_CacheSet(task_id, key, value, value_len, ttl_seconds) -> int
+# 16. D1_CacheSet(task_id, key, value, value_len, ttl_seconds) -> int
 _lib.D1_CacheSet.argtypes = [c_uint64, c_char_p, c_char_p, c_int, c_int]
 _lib.D1_CacheSet.restype = c_int
 
-# 13. D1_CacheDelete(task_id, key) -> int
+# 17. D1_CacheDelete(task_id, key) -> int
 _lib.D1_CacheDelete.argtypes = [c_uint64, c_char_p]
 _lib.D1_CacheDelete.restype = c_int
 
-# 14. D1_DBQuery(task_id, query, query_len, result, result_len) -> int
+# 18. D1_DBQuery(task_id, query, query_len, result, result_len) -> int
 _lib.D1_DBQuery.argtypes = [c_uint64, c_char_p, c_int, POINTER(c_char_p), POINTER(c_int)]
 _lib.D1_DBQuery.restype = c_int
 
-# 15. D1_DBExec(task_id, query, query_len, affected_rows) -> int
+# 19. D1_DBExec(task_id, query, query_len, affected_rows) -> int
 _lib.D1_DBExec.argtypes = [c_uint64, c_char_p, c_int, POINTER(c_int64)]
 _lib.D1_DBExec.restype = c_int
 
-# 16. D1_Set(task_id, key, value, value_len) -> int
+# 20. D1_Set(task_id, key, value, value_len) -> int
 _lib.D1_Set.argtypes = [c_uint64, c_char_p, c_char_p, c_int]
 _lib.D1_Set.restype = c_int
 
-# 17. D1_Get(task_id, key, result, result_len) -> int
+# 21. D1_Get(task_id, key, result, result_len) -> int
 _lib.D1_Get.argtypes = [c_uint64, c_char_p, POINTER(c_char_p), POINTER(c_int)]
 _lib.D1_Get.restype = c_int
 
@@ -208,13 +246,32 @@ class D1Error(Exception):
 
 
 # ---------------------------------------------------------------------------
+# CallResult — D1.call() 返回的 structured result
+# 与 C++ CallResult / C# D1CallResult / Java CallResult 保持一致
+# ---------------------------------------------------------------------------
+
+CallResult = namedtuple("CallResult", ["return_code", "payload", "error"])
+CallResult.__doc__ = """D1.call() 同步调用的返回结果。
+
+ Attributes:
+     return_code (int): C API 原始返回码，0 表示成功。
+     payload (bytes | None): 响应载荷，失败时可能为 None。
+     error (str | None): 错误信息，成功时为 None。
+
+ Methods:
+     ok(): 返回 True 当且仅当 return_code == 0 且 error is None。
+"""
+CallResult.ok = lambda self: self.return_code == 0 and self.error is None
+
+
+# ---------------------------------------------------------------------------
 # D1 主类
 # ---------------------------------------------------------------------------
 
 class D1:
     """D1 运行时 Python 封装。
 
-    封装 D1 动态库的全部 17 个 C API，提供 Python 风格的调用接口。
+    封装 D1 动态库的全部 C API，提供 Python 风格的调用接口。
 
     支持上下文管理器（with 语句），在退出时自动调用 stop()。
 
@@ -223,7 +280,7 @@ class D1:
             print("版本:", d1.version())
             d1.init("config.yaml")
             d1.start()
-            d1.set_on_request(my_handler)
+            d1.set_on_call(my_handler)
             d1.wait_stop()
 
     或手动管理生命周期:
@@ -240,6 +297,7 @@ class D1:
         注意: 实际使用时通常只创建一个 D1 实例。
         """
         self._handler_ref = None   # 保持回调引用，防止被 GC
+        self._lifecycle_refs = {}  # 阶段名 -> 回调引用，防止被 GC
         self._request_cbs = {}     # task_id -> (callback, keepalive)
         self._initialized = False
         self._started = False
@@ -341,9 +399,9 @@ class D1:
         """
         return _lib.D1_WaitStop()
 
-    # === 6. SetOnRequest ===
+    # === 6. SetOnCall ===
 
-    def set_on_request(self, handler):
+    def set_on_call(self, handler):
         """设置默认消息处理器。
 
         Args:
@@ -356,7 +414,7 @@ class D1:
                 print(f"[{task_id}] {method}: {params}")
                 return b"ack"
 
-            d1.set_on_request(my_handler)
+            d1.set_on_call(my_handler)
         """
         # 创建 C 回调闭包
         def _cb(task_id, method, params, payload_len, out_result, out_len, out_error):
@@ -368,28 +426,105 @@ class D1:
 
                 if result is not None:
                     result_bytes = result if isinstance(result, bytes) else str(result).encode("utf-8")
-                    out_result[0] = ctypes.cast(
-                        ctypes.create_string_buffer(result_bytes, len(result_bytes)),
-                        c_char_p,
-                    )
+                    # 使用 libc malloc 分配（D1 将通过 D1_Free=free 释放）
+                    # 不使用 create_string_buffer（GC 时会 double-free）
+                    buf_ptr = _c_malloc(len(result_bytes))
+                    ctypes.memmove(buf_ptr, result_bytes, len(result_bytes))
+                    out_result[0] = ctypes.cast(buf_ptr, c_char_p)
                     out_len[0] = len(result_bytes)
 
                 return 0
             except Exception as exc:
                 err_bytes = str(exc).encode("utf-8")
-                out_error[0] = ctypes.cast(
-                    ctypes.create_string_buffer(err_bytes, len(err_bytes)),
-                    c_char_p,
-                )
+                buf_ptr = _c_malloc(len(err_bytes))
+                ctypes.memmove(buf_ptr, err_bytes, len(err_bytes))
+                out_error[0] = ctypes.cast(buf_ptr, c_char_p)
                 return -1
 
         self._handler_ref = D1_HANDLER_CB(_cb)
-        _lib.D1_SetOnRequest(self._handler_ref)
+        _lib.D1_SetOnCall(self._handler_ref)
 
-    # === 7. Publish ===
+    # === 7. HandleRequest / SetOnInit / SetOnStart / SetOnStop ===
 
-    def publish(self, task_id, target, method, params):
-        """发布消息到指定目标（单向，不等待响应）。
+    def handle_request(self, method, params):
+        """将外部请求转入 D1 管道处理。
+
+        Args:
+            method (str): 消息方法名。
+            params (str | bytes): 消息载荷。
+        """
+        c_method = method.encode("utf-8")
+        c_params, p_len = self._encode_payload(params)
+
+        _lib.D1_HandleRequest(c_method, c_params, p_len)
+
+    def set_on_init(self, handler):
+        """注册 Init 阶段回调（组件初始化完成后调用）。
+
+        Args:
+            handler: 可调用对象，签名为 handler(task_id) -> int 或 None。
+                     返回 0 表示成功，非零表示失败。
+
+        示例:
+            d1.set_on_init(lambda task_id: 0)
+        """
+        def _cb(task_id):
+            try:
+                ret = handler(task_id)
+                return int(ret) if ret is not None else 0
+            except Exception:
+                return -1
+
+        ref = D1_LIFECYCLE_CB(_cb)
+        self._lifecycle_refs["init"] = ref
+        _lib.D1_SetOnInit(ref)
+
+    def set_on_start(self, handler):
+        """注册 Start 阶段回调（连接启动前调用）。
+
+        Args:
+            handler: 可调用对象，签名为 handler(task_id) -> int 或 None。
+                     返回 0 表示成功，非零表示失败。
+
+        示例:
+            d1.set_on_start(lambda task_id: 0)
+        """
+        def _cb(task_id):
+            try:
+                ret = handler(task_id)
+                return int(ret) if ret is not None else 0
+            except Exception:
+                return -1
+
+        ref = D1_LIFECYCLE_CB(_cb)
+        self._lifecycle_refs["start"] = ref
+        _lib.D1_SetOnStart(ref)
+
+    def set_on_stop(self, handler):
+        """注册 Stop 阶段回调（连接断开后调用）。
+
+        Args:
+            handler: 可调用对象，签名为 handler(task_id) -> int 或 None。
+                     返回 0 表示成功，非零表示失败。
+
+        示例:
+            d1.set_on_stop(lambda task_id: 0)
+        """
+        def _cb(task_id):
+            try:
+                ret = handler(task_id)
+                return int(ret) if ret is not None else 0
+            except Exception:
+                return -1
+
+        ref = D1_LIFECYCLE_CB(_cb)
+        self._lifecycle_refs["stop"] = ref
+        _lib.D1_SetOnStop(ref)
+
+    # === 8. Notify ===
+
+    def notify(self, task_id, target, method, params):
+        """发送单向消息到指定目标（无回复，不等待响应）。
 
         Args:
             task_id (int): 任务标识。
@@ -398,38 +533,43 @@ class D1:
             params (str | bytes): 消息参数。
 
         Raises:
-            D1Error: 发布失败。
+            D1Error: 发送失败。
         """
         c_target = target.encode("utf-8")
         c_method = method.encode("utf-8")
         c_params, p_len = self._encode_payload(params)
 
-        ret = _lib.D1_Publish(
+        ret = _lib.D1_Notify(
             c_uint64(task_id), c_target, c_method, c_params, p_len
         )
         if ret != 0:
-            raise D1Error(f"D1_Publish failed, error code: {ret}", code=ret)
+            raise D1Error(f"D1_Notify failed, error code: {ret}", code=ret)
 
-    # === 8. Call ===
+    # === 9. Call ===
 
     def call(self, task_id, kind, target, method, params, timeout_sec):
         """同步调用远程目标并等待响应。
 
         Args:
             task_id (int): 任务标识。
-            kind (int): 调用类型。
+            kind (str): 调用类型（如 "default"/"conn"/"script"/"service"/"exec"）。
             target (str): 目标地址。
             method (str): 消息方法。
             params (str | bytes): 消息参数。
             timeout_sec (int): 超时秒数。
 
         Returns:
-            dict: {"payload": bytes, "error": str | None}
-                  成功时 error 为 None。
+            CallResult: 包含 return_code、payload、error 的结构化结果。
+                       使用 result.ok() 判断是否成功。
 
-        Raises:
-            D1Error: 调用失败。
+        示例:
+            result = d1.call(1, "default", "node/node1", "rpc.query", '{"sql":"SELECT 1"}', 10)
+            if result.ok():
+                print("响应:", result.payload)
+            else:
+                print("错误:", result.error, "码:", result.return_code)
         """
+        c_kind = kind.encode("utf-8")
         c_target = target.encode("utf-8")
         c_method = method.encode("utf-8")
         c_params, p_len = self._encode_payload(params)
@@ -439,7 +579,7 @@ class D1:
         out_error = c_char_p()
 
         ret = _lib.D1_Call(
-            c_uint64(task_id), c_int(kind),
+            c_uint64(task_id), c_kind,
             c_target, c_method, c_params, p_len, c_int(timeout_sec),
             byref(out_result), byref(out_len), byref(out_error),
         )
@@ -460,13 +600,13 @@ class D1:
         if out_error.value is not None:
             _lib.D1_Free(out_error.value)
 
-        if ret != 0:
-            err_msg = result_error if result_error else f"错误码: {ret}"
-            return {"payload": result_payload, "error": err_msg}
+        return CallResult(
+            return_code=ret,
+            payload=result_payload,
+            error=result_error if ret != 0 else None,
+        )
 
-        return {"payload": result_payload, "error": None}
-
-    # === 9. Request ===
+    # === 10. Request ===
 
     def request(self, task_id, target, method, params, timeout_sec, callback):
         """异步请求远程目标。
@@ -510,7 +650,7 @@ class D1:
             self._request_cbs.pop(task_id, None)
             raise D1Error(f"D1_Request failed, error code: {ret}", code=ret)
 
-    # === 10. Reply ===
+    # === 11. Reply ===
 
     def reply(self, task_id, method, params):
         """回复消息（通常在 handler 内部使用）。
@@ -530,7 +670,7 @@ class D1:
         if ret != 0:
             raise D1Error(f"D1_Reply failed, error code: {ret}", code=ret)
 
-    # === 11. CacheGet ===
+    # === 12. CacheGet ===
 
     def cache_get(self, task_id, key):
         """从缓存中获取键对应的值。
@@ -563,7 +703,7 @@ class D1:
 
         return py_result
 
-    # === 12. CacheSet ===
+    # === 13. CacheSet ===
 
     def cache_set(self, task_id, key, value, ttl_seconds):
         """设置缓存键值对。
@@ -584,7 +724,7 @@ class D1:
         if ret != 0:
             raise D1Error(f"D1_CacheSet failed, error code: {ret}", code=ret)
 
-    # === 13. CacheDelete ===
+    # === 14. CacheDelete ===
 
     def cache_delete(self, task_id, key):
         """从缓存中删除指定键。
@@ -602,7 +742,7 @@ class D1:
         if ret != 0:
             raise D1Error(f"D1_CacheDelete failed, error code: {ret}", code=ret)
 
-    # === 14. DBQuery ===
+    # === 15. DBQuery ===
 
     def db_query(self, task_id, query):
         """执行数据库查询并返回结果。
@@ -638,7 +778,7 @@ class D1:
 
         return py_result
 
-    # === 15. DBExec ===
+    # === 16. DBExec ===
 
     def db_exec(self, task_id, query):
         """执行数据库写操作。
@@ -662,7 +802,7 @@ class D1:
 
         return affected.value
 
-    # === 16. Set ===
+    # === 17. Set ===
 
     def set(self, task_id, key, value):
         """向 D1 内建键值存储设置键值对。
@@ -682,7 +822,7 @@ class D1:
         if ret != 0:
             raise D1Error(f"D1_Set failed, error code: {ret}", code=ret)
 
-    # === 17. Get ===
+    # === 18. Get ===
 
     def get(self, task_id, key):
         """从 D1 内建键值存储获取键对应的值。

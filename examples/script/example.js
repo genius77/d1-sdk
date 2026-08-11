@@ -1,6 +1,6 @@
 // ============================================================
 // example.js — D1 Script 扩展示例
-// 覆盖所有 VM API：publish / request / call / reply / 日志 / 缓存 / 数据库 / 临时存储
+// 覆盖所有 VM API：notify / request / call / reply / 日志 / 缓存 / 数据库 / 临时存储
 // ============================================================
 
 function main(input) {
@@ -25,21 +25,21 @@ function main(input) {
     }
 }
 
-// ── 示例 1: publish 单向消息 ──
+// ── 示例 1: notify 单向消息 ──
 function handleSensorAlert(params) {
     var temp = params.temperature || 0;
 
     if (temp > 30) {
         d1.warn("高温报警: " + temp + "°C");
 
-        // d1.publish(connName, method, [data])
-        var err = d1.publish("mqtt", "alert.temp", { temperature: temp, level: "high" });
+        // d1.notify(connName, method, [data])
+        var err = d1.notify("mqtt", "alert.temp", { temperature: temp, level: "high" });
         if (err) {
-            d1.error("publish 失败: " + err);
+            d1.error("notify 失败: " + err);
         }
     }
 
-    return { result: { published: true, temperature: temp } };
+    return { result: { notified: true, temperature: temp } };
 }
 
 // ── 示例 2: call 同步调用 ──

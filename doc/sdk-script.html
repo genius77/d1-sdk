@@ -4,7 +4,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>D1 Script 扩展开发指南 · SDK-02 · v1.5.0</title>
+  <title>D1 Script 扩展开发指南 · SDK-02 · v1.7.0</title>
 
   <style>
     @font-face {
@@ -252,9 +252,9 @@
 
     <header class="page-header">
       <h1>D1 Script 扩展开发指南</h1>
-      <div class="subtitle">SDK-02 · v1.5.0</div>
+      <div class="subtitle">SDK-02 · v1.7.0</div>
       <div class="badge">JS 脚本引擎</div>
-      <div class="meta">版本 v1.5.0 · 2026-06-25 · 适用于 D1 ≥ v1.5.0</div>
+      <div class="meta">版本 v1.7.0 · 2026-08-11 · 适用于 D1 ≥ v1.7.0</div>
     </header>
 
     <nav class="toc">
@@ -409,9 +409,9 @@ items:
         <section id="s4-1">
           <h3>4.1 通信 API</h3>
 
-          <h4>d1.publish(connName, method, [data])</h4>
+          <h4>d1.notify(connName, method, [data])</h4>
           <p>发送单向消息到 connector，无回复。</p>
-          <pre><code>var err = d1.publish("mqtt_client", "sensor.data", { temp: 25.5 });
+          <pre><code>var err = d1.notify("mqtt_client", "sensor.data", { temp: 25.5 });
 // 返回: 空字符串 = 成功，非空 = 错误描述</code></pre>
 
           <h4>d1.request(connName, method, [data], [timeout], callback)</h4>
@@ -628,13 +628,13 @@ function main(input) {
     if (temp &gt; threshold) {
         d1.warn("high temperature: " + temp + "°C (threshold: " + threshold + "°C)");
         // 发送报警到外部系统
-        var err = d1.publish("mqtt_client", "alert.temp", {
+        var err = d1.notify("mqtt_client", "alert.temp", {
             temperature: temp,
             threshold: threshold,
             timestamp: Date.now()
         });
         if (err) {
-            return { error: { code: -32000, message: "publish failed: " + err } };
+            return { error: { code: -32000, message: "notify failed: " + err } };
         }
         return { result: { alerted: true, temperature: temp } };
     }
@@ -683,7 +683,7 @@ function process(input) {
     </main>
 
     <footer class="page-footer">
-      <p>&copy; D1 Project · SDK-02 Script 扩展开发指南 · v1.5.0 · 2026-06-25</p>
+      <p>&copy; D1 Project · SDK-02 Script 扩展开发指南 · v1.7.0 · 2026-08-11</p>
     </footer>
 
   </article>

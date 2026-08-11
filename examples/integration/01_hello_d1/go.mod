@@ -1,8 +1,8 @@
 module github.com/genius77/d1-sdk/examples/integration/01_hello_d1
 
-go 1.23
+go 1.21
 
-require github.com/genius77/d1 v1.5.0
+require d1 v0.0.0
 
 require (
 	github.com/allegro/bigcache/v3 v3.1.0 // indirect
@@ -29,3 +29,5 @@ require (
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
+
+replace d1 => ../../../../d1

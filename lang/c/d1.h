@@ -2,7 +2,7 @@
 #define D1_H
 
 /*
- * D1 SDK C 头文件 | 对应 D1 动态库版本: ≥ v1.5.0
+ * D1 SDK C 头文件 | 对应 D1 动态库版本: ≥ v1.7.0
  */
 
 #include <stddef.h>
@@ -34,7 +34,7 @@ int D1_Stop(void);
 int D1_WaitStop(void);
 
 // ============================================================
-// D1_OnRequestFunc — 宿主程序默认处理器（kind="default" 回调）
+// D1_CallFunc — 宿主程序默认处理器（kind="default" 回调）
 //
 // 参数:
 //   task_id      任务 ID（uint64）
@@ -47,27 +47,51 @@ int D1_WaitStop(void);
 //
 // 返回值: 0=成功, -1=失败
 // ============================================================
-typedef int (*D1_OnRequestFunc)(uint64_t task_id, const char* method,
+typedef int (*D1_CallFunc)(uint64_t task_id, const char* method,
                               const char* params, int params_len,
                               char** out_result, int* out_len,
                               char** out_error);
 
 // 注册宿主程序默认处理器
-void D1_SetOnRequest(D1_OnRequestFunc handler);
+void D1_SetOnCall(D1_CallFunc handler);
 
 // 注册宿主程序异步响应回调（Request 使用）
 typedef void (*D1_OnResponse)(uint64_t task_id, const char* params,
                               int params_len, const char* error);
 
 // ============================================================
+// 生命周期回调（Init/Start/Stop 阶段）
+// ============================================================
+
+// 生命周期回调函数类型：接收 task_id，返回 0=成功，非 0=失败
+typedef int (*D1_LifecycleFunc)(uint64_t task_id);
+
+// 注册 Init 阶段回调（组件初始化完成后调用）
+void D1_SetOnInit(D1_LifecycleFunc handler);
+
+// 注册 Start 阶段回调（连接启动前调用）
+void D1_SetOnStart(D1_LifecycleFunc handler);
+
+// 注册 Stop 阶段回调（连接断开后调用）
+void D1_SetOnStop(D1_LifecycleFunc handler);
+
+// ============================================================
+// 请求/响应处理（宿主将外部消息转入 D1 管道）
+// ============================================================
+
+// HandleRequest 将外部请求转入 D1 管道处理
+// method: 消息方法名, params/params_len: 消息载荷
+void D1_HandleRequest(const char* method, const char* params, int params_len);
+
+// ============================================================
 // 核心 API（所有操作基于 task_id）
 // ============================================================
 
-// Publish 发送单向消息（无回复），仅支持 kind="conn"
+// Notify 发送单向消息（无回复），仅支持 kind="conn"
 // params/params_len: 消息数据
 // 返回值: 0=成功, 负数=错误码
-int D1_Publish(uint64_t task_id, const char* target,
-               const char* method, const char* params, int params_len);
+int D1_Notify(uint64_t task_id, const char* target,
+              const char* method, const char* params, int params_len);
 
 // Call 同步调用-响应（阻塞等待结果）
 // timeout_sec: 超时秒数，0=使用默认

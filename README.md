@@ -1,7 +1,7 @@
 # D1 SDK — 多语言 SDK 封装与使用示例
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![D1 Version](https://img.shields.io/badge/D1-%E2%89%A5%20v1.5.0-blue)](https://github.com/genius77/D1/releases)
+[![D1 Version](https://img.shields.io/badge/D1-%E2%89%A5%20v1.7.0-blue)](https://github.com/genius77/D1/releases)
 
 ## 概述
 
@@ -19,12 +19,12 @@ d1-sdk/
 ├── VERSION                       # 仓库版本号
 ├── CHANGELOG.md                  # 变更日志
 ├── doc/                          # SDK 使用文档
-│   ├── sdk-host.html             # SDK-01: 宿主程序开发指南
+│   ├── sdk-exec.html             # SDK-01: Exec 扩展开发指南
 │   ├── sdk-script.html           # SDK-02: Script 扩展开发指南
 │   ├── sdk-service.html          # SDK-03: Service 扩展开发指南
-│   ├── sdk-exec.html             # SDK-04: Exec 扩展开发指南
-│   ├── sdk-protocol.html         # SDK-05: Protocol 扩展开发指南
-│   └── sdk-integration.html      # SDK-06: Go 直接集成指南
+│   ├── sdk-protocol.html         # SDK-04: Protocol 开发指南
+│   ├── sdk-host.html             # SDK-05: 外部宿主 API 指南
+│   └── sdk-integration.html      # SDK-06: 内部集成指南
 ├── download/                     # D1 动态库下载脚本
 │   ├── download_d1.sh            # Unix/Linux/macOS
 │   └── download_d1.ps1           # Windows PowerShell
@@ -83,13 +83,20 @@ cd d1-sdk
 ```go
 import "d1"
 
-d := d1.New()
-d.OnRequest(func(ctx *d1.Context, req *d1.Request) (*d1.Response, error) {
-    return d1.NewResponse(json.RawMessage(`{"ok":true}`)), nil
+d1.OnCall(func(ctx d1.Context, req *d1.Request) (*d1.Response, error) {
+    return &d1.Response{
+        JSONRPC: "2.0",
+        ID:      req.ID,
+        Result:  json.RawMessage(`{"ok":true}`),
+    }, nil
 })
-d.Init("./config")
-d.Start()
-d.WaitStop()
+if err := d1.Init("./config"); err != nil {
+    panic(err)
+}
+if err := d1.Start(); err != nil {
+    panic(err)
+}
+d1.WaitStop()
 ```
 
 详见 [SDK-06 内部集成指南](doc/sdk-integration.html) 和 [integration 示例](examples/integration/01_hello_d1/)。
@@ -121,7 +128,10 @@ d.WaitStop()
 
 | 本仓库版本 | 最低 D1 动态库版本 | 主要变更 |
 |-----------|--------------------|----------|
-| **0.3.0** | **≥ v1.5.0** | `method`/`params` 标准化命名；`out_payload`→`out_result`；Go 直接集成支持 |
+| **0.6.0** | **≥ v1.7.0** | 跨语言 API 一致性：Python `call()` 返回 `CallResult` namedtuple；C++ `CacheGet`/`DBQuery`/`Get` 返回 `GetResult`（含返回码）；Java 参数名 `payload`→`params`；Java/C# `cacheGet`/`get` 失败时抛出异常 |
+| 0.5.0 | ≥ v1.7.0 | 修复库名大小写（C#/Java）、内存分配器不匹配（C++/C#/Python）、Python 示例作用域、Go CGO 回调注册类型不匹配；完善示例和文档 |
+| 0.4.0 | ≥ v1.7.0 | 全部语言绑定与 C 头文件同步至 `d1.h` v1.7.0；JS 脚本示例 `d1.publish`→`d1.notify`；README Go 快速开始修正为 `SetOnCall` |
+| 0.3.0 | ≥ v1.7.0 | `D1_SetOnRequest`→`D1_SetOnCall`；`D1_Publish`→`D1_Notify`；新增生命周期回调；`kind` 改为字符串 |
 | 0.2.0 | ≥ v1.2.0 | 移除 `Wait()`，新增 `WaitStop()`；7 平台编译支持 |
 | 0.1.0 | ≥ v1.1.0 | 初始版本 |
 

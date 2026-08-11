@@ -43,7 +43,7 @@ function handleOrderCreate(params) {
         d1.set("order:" + orderId, { id: orderId, status: "paid" });
 
         // 支付成功后通知物流
-        d1.publish("mqtt", "logistics.notify", { order_id: orderId, action: "prepare" });
+        d1.notify("mqtt", "logistics.notify", { order_id: orderId, action: "prepare" });
     });
 
     if (err) {

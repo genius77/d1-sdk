@@ -1,4 +1,4 @@
-// D1 SDK C# 封装 | 对应 D1 动态库版本: ≥ v1.5.0
+// D1 SDK C# 封装 | 对应 D1 动态库版本: ≥ v1.7.0
 // 跨平台支持: Windows (.dll) | Linux (.so) | macOS (.dylib)
 //
 // 用法: 将本文件加入项目，将动态库放入项目 deps/ 目录即可。
@@ -10,9 +10,10 @@
 //   - D1_Version() 返回的字符串为静态常量，不需要释放。
 //   - D1_Call / D1_CacheGet / D1_DBQuery / D1_Get 返回的字符串由 D1 分配，
 //     本 SDK 封装层自动调用 D1_Free 释放，调用者无需关心。
-//   - D1_OnRequestFunc 回调中通过 out 参数返回的字符串由 D1 负责释放。
+//   - D1_CallFunc 回调中通过 out 参数返回的字符串由 D1 负责释放。
 
 using System;
+using System.Collections.Concurrent;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -74,7 +75,7 @@ namespace Genius77.D1
 
     /// <summary>
     /// 默认请求处理回调委托。当 D1 收到未匹配的请求时调用此处理器。
-    /// 由 D1.SetOnRequest() 注册。
+    /// 由 D1.SetOnCall() 注册。
     /// </summary>
     /// <param name="taskId">任务 ID。</param>
     /// <param name="method">消息名称。</param>
@@ -105,7 +106,7 @@ namespace Genius77.D1
     // ========================================================================
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-    internal delegate int NativeOnRequestFunc(
+    internal delegate int NativeCallFunc(
         ulong taskId,
         IntPtr method,
         IntPtr payload,
@@ -115,6 +116,9 @@ namespace Genius77.D1
         out IntPtr outError);
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    internal delegate int NativeLifecycleFunc(ulong taskId);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     internal delegate void NativeOnResponse(
         ulong taskId,
         IntPtr payload,
@@ -122,7 +126,7 @@ namespace Genius77.D1
         IntPtr error);
 
     // ========================================================================
-    //  D1 静态封装类 — 全部 17 个 C API 的 C# 封装
+    //  D1 静态封装类 — 全部 C API 的 C# 封装
     // ========================================================================
 
     /// <summary>
@@ -145,15 +149,15 @@ namespace Genius77.D1
             Assembly assembly,
             DllImportSearchPath? searchPath)
         {
-            if (libraryName != "D1")
+            if (libraryName != "d1")
                 return IntPtr.Zero;
 
             if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-                return NativeLibrary.Load("D1.dll", assembly, searchPath);
+                return NativeLibrary.Load("d1.dll", assembly, searchPath);
             else if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
-                return NativeLibrary.Load("libD1.dylib", assembly, searchPath);
+                return NativeLibrary.Load("libd1.dylib", assembly, searchPath);
             else // Linux / FreeBSD 等
-                return NativeLibrary.Load("libD1.so", assembly, searchPath);
+                return NativeLibrary.Load("libd1.so", assembly, searchPath);
         }
 
         // ==============================
@@ -161,40 +165,64 @@ namespace Genius77.D1
         // ==============================
 
         private static D1RequestHandler? _requestHandler;
-        private static NativeOnRequestFunc? _nativeHandler;
+        private static NativeCallFunc? _nativeHandler;
+
+        // 生命周期回调存活引用（防止 GC 回收）
+        private static NativeLifecycleFunc? _nativeOnInit;
+        private static NativeLifecycleFunc? _nativeOnStart;
+        private static NativeLifecycleFunc? _nativeOnStop;
+
+        // 异步 Request 回调存活引用（按 task_id 索引，防止 GC 回收）
+        // 回调被调用后自动移除，允许 GC 回收
+        private static readonly ConcurrentDictionary<ulong, NativeOnResponse> _activeRequestCallbacks = new();
 
         // ==============================
-        //  原生 P/Invoke 声明（17 个函数）
+        //  原生 P/Invoke 声明（22 个函数）
         //  全部使用 Cdecl 调用约定
         // ==============================
 
-        [DllImport("D1", CallingConvention = CallingConvention.Cdecl)]
+        [DllImport("d1", CallingConvention = CallingConvention.Cdecl)]
         private static extern IntPtr D1_Version();
 
-        [DllImport("D1", CallingConvention = CallingConvention.Cdecl)]
+        [DllImport("d1", CallingConvention = CallingConvention.Cdecl)]
         private static extern int D1_Init(IntPtr configPath);
 
-        [DllImport("D1", CallingConvention = CallingConvention.Cdecl)]
+        [DllImport("d1", CallingConvention = CallingConvention.Cdecl)]
         private static extern int D1_Start();
 
-        [DllImport("D1", CallingConvention = CallingConvention.Cdecl)]
+        [DllImport("d1", CallingConvention = CallingConvention.Cdecl)]
         private static extern int D1_Stop();
 
-        [DllImport("D1", CallingConvention = CallingConvention.Cdecl)]
+        [DllImport("d1", CallingConvention = CallingConvention.Cdecl)]
         private static extern int D1_WaitStop();
 
-        [DllImport("D1", CallingConvention = CallingConvention.Cdecl)]
-        private static extern void D1_SetOnRequest(NativeOnRequestFunc handler);
+        [DllImport("d1", CallingConvention = CallingConvention.Cdecl)]
+        private static extern void D1_SetOnCall(NativeCallFunc handler);
 
-        [DllImport("D1", CallingConvention = CallingConvention.Cdecl)]
-        private static extern int D1_Publish(
+        [DllImport("d1", CallingConvention = CallingConvention.Cdecl)]
+        private static extern void D1_SetOnInit(NativeLifecycleFunc handler);
+
+        [DllImport("d1", CallingConvention = CallingConvention.Cdecl)]
+        private static extern void D1_SetOnStart(NativeLifecycleFunc handler);
+
+        [DllImport("d1", CallingConvention = CallingConvention.Cdecl)]
+        private static extern void D1_SetOnStop(NativeLifecycleFunc handler);
+
+        [DllImport("d1", CallingConvention = CallingConvention.Cdecl)]
+        private static extern void D1_HandleRequest(
+            IntPtr method,
+            IntPtr payload,
+            int payloadLen);
+
+        [DllImport("d1", CallingConvention = CallingConvention.Cdecl)]
+        private static extern int D1_Notify(
             ulong taskId,
             IntPtr target,
             IntPtr method,
             IntPtr payload,
             int payloadLen);
 
-        [DllImport("D1", CallingConvention = CallingConvention.Cdecl)]
+        [DllImport("d1", CallingConvention = CallingConvention.Cdecl)]
         private static extern int D1_Call(
             ulong taskId,
             IntPtr kind,
@@ -207,7 +235,7 @@ namespace Genius77.D1
             out int outLen,
             out IntPtr outError);
 
-        [DllImport("D1", CallingConvention = CallingConvention.Cdecl)]
+        [DllImport("d1", CallingConvention = CallingConvention.Cdecl)]
         private static extern int D1_Request(
             ulong taskId,
             IntPtr target,
@@ -217,21 +245,21 @@ namespace Genius77.D1
             int timeoutSec,
             NativeOnResponse callback);
 
-        [DllImport("D1", CallingConvention = CallingConvention.Cdecl)]
+        [DllImport("d1", CallingConvention = CallingConvention.Cdecl)]
         private static extern int D1_Reply(
             ulong taskId,
             IntPtr method,
             IntPtr payload,
             int payloadLen);
 
-        [DllImport("D1", CallingConvention = CallingConvention.Cdecl)]
+        [DllImport("d1", CallingConvention = CallingConvention.Cdecl)]
         private static extern int D1_CacheGet(
             ulong taskId,
             IntPtr key,
             out IntPtr result,
             out int resultLen);
 
-        [DllImport("D1", CallingConvention = CallingConvention.Cdecl)]
+        [DllImport("d1", CallingConvention = CallingConvention.Cdecl)]
         private static extern int D1_CacheSet(
             ulong taskId,
             IntPtr key,
@@ -239,10 +267,10 @@ namespace Genius77.D1
             int valueLen,
             int ttlSeconds);
 
-        [DllImport("D1", CallingConvention = CallingConvention.Cdecl)]
+        [DllImport("d1", CallingConvention = CallingConvention.Cdecl)]
         private static extern int D1_CacheDelete(ulong taskId, IntPtr key);
 
-        [DllImport("D1", CallingConvention = CallingConvention.Cdecl)]
+        [DllImport("d1", CallingConvention = CallingConvention.Cdecl)]
         private static extern int D1_DBQuery(
             ulong taskId,
             IntPtr query,
@@ -250,28 +278,28 @@ namespace Genius77.D1
             out IntPtr result,
             out int resultLen);
 
-        [DllImport("D1", CallingConvention = CallingConvention.Cdecl)]
+        [DllImport("d1", CallingConvention = CallingConvention.Cdecl)]
         private static extern int D1_DBExec(
             ulong taskId,
             IntPtr query,
             int queryLen,
             out long affectedRows);
 
-        [DllImport("D1", CallingConvention = CallingConvention.Cdecl)]
+        [DllImport("d1", CallingConvention = CallingConvention.Cdecl)]
         private static extern int D1_Set(
             ulong taskId,
             IntPtr key,
             IntPtr value,
             int valueLen);
 
-        [DllImport("D1", CallingConvention = CallingConvention.Cdecl)]
+        [DllImport("d1", CallingConvention = CallingConvention.Cdecl)]
         private static extern int D1_Get(
             ulong taskId,
             IntPtr key,
             out IntPtr result,
             out int resultLen);
 
-        [DllImport("D1", CallingConvention = CallingConvention.Cdecl)]
+        [DllImport("d1", CallingConvention = CallingConvention.Cdecl)]
         internal static extern void D1_Free(IntPtr ptr);
 
         // ==============================
@@ -291,6 +319,23 @@ namespace Genius77.D1
             IntPtr ptr = Marshal.AllocHGlobal(bytes.Length);
             Marshal.Copy(bytes, 0, ptr, bytes.Length);
             return ptr;
+        }
+
+        /// <summary>
+        /// 使用 C 运行时 malloc 分配内存并写入 UTF-8 字符串。
+        /// 返回的内存将由 D1 通过 D1_Free (= free) 释放。
+        /// 
+        /// 注意: Marshal.AllocHGlobal 在 Windows 上使用 LocalAlloc，
+        /// 与 D1 的 free() 不兼容，因此回调用必须使用此方法分配内存。
+        /// </summary>
+        private static unsafe IntPtr AllocD1String(string s)
+        {
+            byte[] bytes = Encoding.UTF8.GetBytes(s);
+            void* ptr = NativeMemory.Alloc((nuint)bytes.Length);
+            if (ptr == null)
+                return IntPtr.Zero;
+            Marshal.Copy(bytes, 0, (IntPtr)ptr, bytes.Length);
+            return (IntPtr)ptr;
         }
 
         /// <summary>
@@ -401,7 +446,7 @@ namespace Genius77.D1
         /// </summary>
         /// <param name="handler">请求处理回调。不能为 null。</param>
         /// <exception cref="ArgumentNullException">handler 为 null 时抛出。</exception>
-        public static void SetOnRequest(D1RequestHandler handler)
+        public static void SetOnCall(D1RequestHandler handler)
         {
             if (handler == null)
                 throw new ArgumentNullException(nameof(handler));
@@ -432,13 +477,11 @@ namespace Genius77.D1
                 int result = handler(taskId, method, payload,
                     out string outResult, out string outError);
 
-                // 出参转换: C# 字符串 -> 非托管内存
+                // 出参转换: C# 字符串 -> 非托管内存（使用 malloc 分配，与 D1_Free 兼容）
                 if (outResult != null)
                 {
-                    byte[] bytes = Encoding.UTF8.GetBytes(outResult);
-                    outResultPtr = Marshal.AllocHGlobal(bytes.Length);
-                    Marshal.Copy(bytes, 0, outResultPtr, bytes.Length);
-                    outLen = bytes.Length;
+                    outResultPtr = AllocD1String(outResult);
+                    outLen = Encoding.UTF8.GetByteCount(outResult);
                 }
                 else
                 {
@@ -448,9 +491,7 @@ namespace Genius77.D1
 
                 if (outError != null)
                 {
-                    byte[] bytes = Encoding.UTF8.GetBytes(outError);
-                    outErrorPtr = Marshal.AllocHGlobal(bytes.Length);
-                    Marshal.Copy(bytes, 0, outErrorPtr, bytes.Length);
+                    outErrorPtr = AllocD1String(outError);
                 }
                 else
                 {
@@ -460,27 +501,93 @@ namespace Genius77.D1
                 return result;
             };
 
-            D1_SetOnRequest(_nativeHandler);
+            D1_SetOnCall(_nativeHandler);
         }
 
         /// <summary>
-        /// 发布（推送）消息到指定目标，不等待响应。适用于事件广播场景。
+        /// 注册 Init 阶段回调（组件初始化完成后调用）。
+        /// 同一时间只能注册一个处理器，重复调用会覆盖之前的处理器。
+        /// </summary>
+        /// <param name="handler">生命周期回调，返回 0 表示成功，非零表示失败。不能为 null。</param>
+        /// <exception cref="ArgumentNullException">handler 为 null 时抛出。</exception>
+        public static void SetOnInit(Func<ulong, int> handler)
+        {
+            if (handler == null)
+                throw new ArgumentNullException(nameof(handler));
+
+            _nativeOnInit = (taskId) => handler(taskId);
+            D1_SetOnInit(_nativeOnInit);
+        }
+
+        /// <summary>
+        /// 注册 Start 阶段回调（连接启动前调用）。
+        /// 同一时间只能注册一个处理器，重复调用会覆盖之前的处理器。
+        /// </summary>
+        /// <param name="handler">生命周期回调，返回 0 表示成功，非零表示失败。不能为 null。</param>
+        /// <exception cref="ArgumentNullException">handler 为 null 时抛出。</exception>
+        public static void SetOnStart(Func<ulong, int> handler)
+        {
+            if (handler == null)
+                throw new ArgumentNullException(nameof(handler));
+
+            _nativeOnStart = (taskId) => handler(taskId);
+            D1_SetOnStart(_nativeOnStart);
+        }
+
+        /// <summary>
+        /// 注册 Stop 阶段回调（连接断开后调用）。
+        /// 同一时间只能注册一个处理器，重复调用会覆盖之前的处理器。
+        /// </summary>
+        /// <param name="handler">生命周期回调，返回 0 表示成功，非零表示失败。不能为 null。</param>
+        /// <exception cref="ArgumentNullException">handler 为 null 时抛出。</exception>
+        public static void SetOnStop(Func<ulong, int> handler)
+        {
+            if (handler == null)
+                throw new ArgumentNullException(nameof(handler));
+
+            _nativeOnStop = (taskId) => handler(taskId);
+            D1_SetOnStop(_nativeOnStop);
+        }
+
+        /// <summary>
+        /// 将外部请求转入 D1 管道处理。
+        /// </summary>
+        /// <param name="method">消息方法名。</param>
+        /// <param name="payload">消息负载（UTF-8 字符串），可为 null。</param>
+        public static void HandleRequest(string method, string? payload)
+        {
+            IntPtr methodPtr = StringToUtf8Ptr(method);
+            IntPtr payloadPtr = StringToUtf8Ptr(payload);
+            try
+            {
+                D1_HandleRequest(methodPtr, payloadPtr,
+                    payload != null ? Encoding.UTF8.GetByteCount(payload) : 0);
+            }
+            finally
+            {
+                if (methodPtr != IntPtr.Zero) Marshal.FreeHGlobal(methodPtr);
+                if (payloadPtr != IntPtr.Zero) Marshal.FreeHGlobal(payloadPtr);
+            }
+        }
+
+        /// <summary>
+        /// 发送单向消息到指定目标，不等待响应。适用于事件广播场景。
         /// </summary>
         /// <param name="taskId">任务 ID，用于关联上下文。</param>
         /// <param name="target">目标标识字符串。</param>
         /// <param name="method">消息名称。</param>
         /// <param name="payload">消息负载（UTF-8 字符串），可为 null。</param>
-        /// <exception cref="D1Exception">发布失败时抛出。</exception>
-        public static void Publish(ulong taskId, string target, string method, string? payload)
+        /// <exception cref="D1Exception">发送失败时抛出。</exception>
+        public static void Notify(ulong taskId, string target, string method, string? payload)
         {
             IntPtr targetPtr = StringToUtf8Ptr(target);
             IntPtr methodPtr = StringToUtf8Ptr(method);
             IntPtr payloadPtr = StringToUtf8Ptr(payload);
             try
             {
-                int ret = D1_Publish(taskId, targetPtr, methodPtr, payloadPtr,
+                int ret = D1_Notify(taskId, targetPtr, methodPtr, payloadPtr,
                     payload != null ? Encoding.UTF8.GetByteCount(payload) : 0);
-                ThrowIfError(ret, "Publish");
+                ThrowIfError(ret, "Notify");
             }
             finally
             {
@@ -520,6 +627,7 @@ namespace Genius77.D1
                     out IntPtr outResultPtr, out int outLen, out IntPtr outErrorPtr);
 
                 string? outResult = PtrToStringAndFree(outResultPtr, outLen);
+                // out_error 为 null-terminated 字符串，无独立长度参数，传 0 按 null 终止符读取
                 string? outError = PtrToStringAndFree(outErrorPtr, 0);
 
                 return new D1CallResult(ret, outResult, outError);
@@ -559,9 +667,13 @@ namespace Genius77.D1
             IntPtr methodPtr = StringToUtf8Ptr(method);
             IntPtr payloadPtr = StringToUtf8Ptr(payload);
 
-            // 创建原生回调 — 必须保持引用以防 GC 回收
+            // 创建原生回调 — 存储在静态字典中防止 GC 回收
+            // 异步回调可能在 Request() 返回后才被 D1 调用
             NativeOnResponse nativeCb = (tId, pPtr, pLen, errPtr) =>
             {
+                // 回调被调用后移除引用，允许 GC 回收
+                _activeRequestCallbacks.TryRemove(taskId, out _);
+
                 string? pl = null;
                 if (pLen > 0 && pPtr != IntPtr.Zero)
                 {
@@ -577,12 +689,19 @@ namespace Genius77.D1
                 callback(tId, pl, err);
             };
 
+            // 在调用 D1_Request 前存储回调引用（防止 GC 回收）
+            _activeRequestCallbacks[taskId] = nativeCb;
+
             try
             {
                 int ret = D1_Request(taskId, targetPtr, methodPtr, payloadPtr,
                     payload != null ? Encoding.UTF8.GetByteCount(payload) : 0,
                     timeoutSec, nativeCb);
-                ThrowIfError(ret, "Request");
+                if (ret != 0)
+                {
+                    _activeRequestCallbacks.TryRemove(taskId, out _);
+                    ThrowIfError(ret, "Request");
+                }
             }
             finally
             {
@@ -590,9 +709,6 @@ namespace Genius77.D1
                 if (methodPtr != IntPtr.Zero) Marshal.FreeHGlobal(methodPtr);
                 if (payloadPtr != IntPtr.Zero) Marshal.FreeHGlobal(payloadPtr);
             }
-
-            // 确保回调委托在 Request 调用期间不被 GC 回收
-            GC.KeepAlive(nativeCb);
         }
 
         /// <summary>
@@ -624,15 +740,15 @@ namespace Genius77.D1
         /// </summary>
         /// <param name="taskId">任务 ID。</param>
         /// <param name="key">缓存键。</param>
-        /// <returns>缓存值字符串，若键不存在或获取失败则返回 null。</returns>
+        /// <returns>缓存值字符串，若键不存在则返回 null。</returns>
+        /// <exception cref="D1Exception">获取失败（非键不存在的情况）时抛出。</exception>
         public static string? CacheGet(ulong taskId, string key)
         {
             IntPtr keyPtr = StringToUtf8Ptr(key);
             try
             {
                 int ret = D1_CacheGet(taskId, keyPtr, out IntPtr resultPtr, out int resultLen);
-                if (ret != 0)
-                    return null;
+                ThrowIfError(ret, "CacheGet");
                 return PtrToStringAndFree(resultPtr, resultLen);
             }
             finally
@@ -765,14 +881,14 @@ namespace Genius77.D1
         /// <param name="taskId">任务 ID。</param>
         /// <param name="key">键。</param>
         /// <returns>值字符串，若键不存在则返回 null。注意调用后内存已自动释放。</returns>
+        /// <exception cref="D1Exception">获取失败（非键不存在的情况）时抛出。</exception>
         public static string? Get(ulong taskId, string key)
         {
             IntPtr keyPtr = StringToUtf8Ptr(key);
             try
             {
                 int ret = D1_Get(taskId, keyPtr, out IntPtr resultPtr, out int resultLen);
-                if (ret != 0)
-                    return null;
+                ThrowIfError(ret, "Get");
                 return PtrToStringAndFree(resultPtr, resultLen);
             }
             finally
